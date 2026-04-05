@@ -1,0 +1,24 @@
+# Build output
+bin/
+
+# Placeholder files for empty directories
+**/.gitkeep
+
+# Go
+*.test
+*.out
+coverage.txt
+vendor/
+
+# Config secrets (local overrides)
+config/local.yaml
+config/*.local.yaml
+
+# macOS
+.DS_Store
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo

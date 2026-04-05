@@ -1,0 +1,86 @@
+server:
+  grpc_port: 50051          # gRPC listening port for StreamingRecognize RPC.
+  http_port: 8090           # HTTP port for /health, /metrics, /admin endpoints.
+  ws_port: 8091             # WebSocket port for browser clients.
+  max_sessions: 1000        # Max concurrent sessions. Tune to hardware capacity for production.
+  session_timeout_sec: 60   # Idle session timeout (seconds). Sessions with no audio for this
+                            # duration are forcibly terminated.
+  shutdown_drain_sec: 30    # Graceful shutdown drain timeout (seconds) before force-stop.
+  resumable_session_timeout_sec: 0  # Park-and-resume window (seconds) after an unexpected WebSocket
+                                    # disconnect. 0 = disabled (session is closed immediately).
+                                    # Set to 30–60 for resilient mobile/browser clients.
+  allowed_origins: []               # Allowed WebSocket origins for the WS port (e.g. ["https://myapp.com"]).
+                                    # Empty list = allow all origins (suitable when Core is behind a
+                                    # trusted reverse proxy). Set explicitly when exposing WS directly.
+  http_read_timeout_sec: 10    # HTTP request read timeout (seconds). Protects against slow-loris attacks.
+  http_write_timeout_sec: 10   # HTTP response write timeout (seconds). Includes handler execution time.
+  http_idle_timeout_sec: 60    # Keep-alive idle timeout (seconds) for persistent HTTP connections.
+  http_shutdown_timeout_sec: 5 # Graceful HTTP shutdown timeout (seconds) when Core receives SIGTERM.
+
+stream:
+  vad_silence_sec: 0.5              # Silence duration (seconds) after speech before EPD fires.
+  vad_threshold: 0.5                # Speech probability threshold (0.0–1.0). Frames above this = speech.
+  speech_rms_threshold: 0.02        # RMS below this overrides VAD — treats frame as silence.
+  partial_decode_interval_sec: 1.5  # Interval (seconds) between partial decode requests during speech.
+                                    # Auto-increases to 3s (>5s audio) and 5s (>10s audio).
+  partial_decode_window_sec: 10.0   # Max audio window (seconds) sent to STT for a partial decode.
+  decode_timeout_sec: 30            # Per-request STT inference timeout (seconds). Fails with ERR2001.
+  max_buffer_sec: 20                # Audio ring buffer size (seconds). Older confirmed audio is evicted.
+  buffer_overlap_sec: 0.5           # Overlap (seconds) kept at utterance start to avoid clipping.
+  emit_final_on_vad: false          # If true, emit final result immediately on EPD without waiting for STT.
+  vad_frame_timeout_sec: 3          # Seconds without a VAD frame before the stream is considered hung and
+                                    # aborted with ERR2003. Increase on high-latency plugin connections.
+  epd_heartbeat_interval_sec: 30    # Interval (seconds) between EPD heartbeat log lines when no speech
+                                    # is detected. Set to 0 to disable. Per-frame logs are DEBUG only.
+
+codec:
+  target_sample_rate: 16000  # Target PCM sample rate (Hz). Incoming audio is resampled to this.
+
+rate_limit:
+  create_session_rps: 1000.0    # Sustained CreateSession rate per API key or IP (requests/second).
+  create_session_burst: 1000.0  # Burst allowance above create_session_rps. 0 = disable rate limiting.
+  max_sessions_per_ip: 0        # Max concurrent sessions per client IP. 0 = unlimited.
+  max_sessions_per_api_key: 0   # Max concurrent sessions per API key. 0 = unlimited.
+  http_rps: 5.0                 # Sustained request rate for /health and /admin (requests/second).
+  http_burst: 10.0              # Burst allowance for HTTP endpoints.
+
+auth:
+  require_api_key: false   # If true, every request must include a valid api_key field.
+  auth_profile: "none"     # Authentication mode: none | api_key | signed_token.
+  auth_secret: ""          # Secret for signed_token validation; also used as admin token.
+  auth_ttl_sec: 0          # Signed token TTL (seconds). 0 = no expiry check.
+
+storage:
+  enabled: false           # If true, incoming PCM audio is written to disk for debugging.
+  directory: "data/audio"  # Directory for audio recordings.
+
+logging:
+  level: "info"  # Log level: debug | info | warn | error.
+
+tls:
+  tls_required: false  # If true, reject plaintext connections on all ports.
+  cert_file: null      # Path to PEM-encoded TLS certificate file. Required when tls_required is true.
+  key_file: null       # Path to PEM-encoded TLS private key file. Required when tls_required is true.
+
+otel:
+  endpoint: ""                   # OTLP gRPC endpoint (host:port, e.g. "localhost:4317"). Empty = tracing disabled.
+  service_name: "speechmux-core" # OpenTelemetry resource service.name; appears as the service in Jaeger/Tempo.
+  sample_rate: 1.0               # Fraction of traces to sample (0.0–1.0). 1.0 = sample all; lower for high-throughput prod.
+
+# Named decode hyperparameter sets. Client selects via RecognitionConfig.decode_profile.
+decode_profiles:
+  realtime:                          # Fast, low-accuracy profile for real-time microphone sessions.
+    beam_size: 1                     # Number of beams in beam search. 1 = greedy decode (fastest).
+    best_of: 1                       # Candidates sampled when temperature > 0. 1 = no sampling.
+    temperature: 0.0                 # Sampling temperature. 0.0 = deterministic greedy decode.
+    without_timestamps: true         # If true, skip per-word timestamps (faster, smaller output).
+    compression_ratio_threshold: 2.4 # Max gzip compression ratio of transcript before marking no-speech.
+                                     # Higher ratio = repetitive text → likely hallucination.
+    no_speech_threshold: 0.6         # If no-speech probability exceeds this, return empty transcript.
+  accurate:                          # High-accuracy profile for batch file transcription.
+    beam_size: 5                     # Wider beam search explores more hypotheses (slower, more accurate).
+    best_of: 5                       # Sample 5 candidates and pick the best (requires temperature > 0).
+    temperature: 0.0                 # Sampling temperature. 0.0 = deterministic greedy decode.
+    without_timestamps: true         # If true, skip per-word timestamps (faster, smaller output).
+    compression_ratio_threshold: 2.4 # Max gzip compression ratio before marking no-speech.
+    no_speech_threshold: 0.6         # If no-speech probability exceeds this, return empty transcript.

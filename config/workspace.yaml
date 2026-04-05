@@ -1,0 +1,24 @@
+state_dir: /tmp/speechmux  # Directory where PID files are written at runtime.
+
+processes:
+  - name: vad                              # Unique name; used in status output and PID file names.
+    command: .venv/bin/python3             # Executable to run. Use venv python to ensure correct dependencies.
+    args:                                  # Command-line arguments passed to command.
+      - "-m"
+      - "speechmux_plugin_vad.main"
+      - "--config"
+      - "plugin-vad/config/vad.yaml"       # Socket path and engine are configured inside this file.
+    working_directory: ".."                # Directory the process runs in; relative to speechmux-core's cwd.
+    restart: on-failure                    # Restart policy: always | on-failure | never.
+    startup_delay_ms: 500                  # Wait (ms) after this process starts before launching the next one.
+
+  - name: whisper-mlx
+    command: .venv/bin/python3             # Executable to run. Use venv python to ensure correct dependencies.
+    args:
+      - "-m"
+      - "speechmux_plugin_stt.main"
+      - "--config"
+      - "plugin-stt/config/inference.yaml" # Socket path and engine are configured inside this file.
+    working_directory: ".."
+    restart: on-failure
+    startup_delay_ms: 0                    # STT starts after VAD due to startup_delay_ms on vad.

@@ -1,0 +1,23 @@
+vad:
+  endpoints:              # VAD plugin endpoint pool. Core assigns one endpoint per session (round-robin).
+    - id: "vad-0"         # Unique ID for this endpoint; appears in health check reports.
+      socket: "/tmp/speechmux/vad.sock"  # Unix domain socket path. Must match --socket in the VAD process.
+  health_check_interval_sec: 10  # Interval (seconds) between health probes to each VAD endpoint.
+  circuit_breaker:
+    failure_threshold: 5          # Consecutive failures before the circuit opens (stops routing to endpoint).
+                                  # Increase for flaky networks; decrease for fast failover.
+    half_open_timeout_sec: 30     # Seconds in OPEN state before a single probe request is allowed through.
+                                  # Shorter = faster recovery attempt; longer = less thundering-herd risk.
+
+inference:
+  routing_mode: "least_connections"  # Routing strategy: round_robin | least_connections | active_standby.
+  endpoints:                         # STT inference endpoint pool. Add entries for horizontal scaling.
+    - id: "whisper-mlx"              # Unique ID for this endpoint; used in health reports and routing.
+      socket: "/tmp/speechmux/stt-mlx.sock"  # Unix domain socket path. Must match server.socket in the STT plugin config.
+      priority: 1                    # Priority for active_standby routing. Higher = preferred.
+  health_check_interval_sec: 10     # Interval (seconds) between health probes to each inference endpoint.
+  health_probe_timeout_sec: 5       # Per-probe gRPC HealthCheck timeout (seconds). Probes exceeding this
+                                    # are treated as failures and may open the circuit breaker.
+  circuit_breaker:
+    failure_threshold: 5            # Consecutive failures before the circuit opens. Increase on slow hardware.
+    half_open_timeout_sec: 30       # Seconds to wait in OPEN before attempting HALF_OPEN recovery probe.

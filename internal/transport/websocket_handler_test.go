@@ -1,0 +1,322 @@
+package transport
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"nhooyr.io/websocket"
+
+	"github.com/speechmux/core/internal/config"
+	"github.com/speechmux/core/internal/session"
+)
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+// newTestSessionManager returns a session.Manager with default test settings.
+// Shared by grpc_server_test.go, tls_test.go, and pipeline_integration_test.go.
+func newTestSessionManager() *session.Manager {
+	cfg := &config.Config{}
+	cfg.Defaults()
+	_ = cfg.Validate()
+	cfg.Server.MaxSessions = 100
+	return session.NewManager(cfg, nil)
+}
+
+// wsTestConfig returns a minimal config for session.Manager.
+func wsTestConfig() *config.Config {
+	cfg := &config.Config{}
+	cfg.Defaults()
+	_ = cfg.Validate()
+	cfg.Server.MaxSessions = 10
+	return cfg
+}
+
+// wsTestServer wraps a WebSocketHandler in an httptest.Server.
+// The caller must close the returned server.
+func wsTestServer(h *WebSocketHandler) *httptest.Server {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", h.serveWS)
+	return httptest.NewServer(mux)
+}
+
+// dialWS connects a WebSocket client to the test server and returns the conn.
+// The caller must close the connection.
+func dialWS(t *testing.T, srv *httptest.Server) *websocket.Conn {
+	t.Helper()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
+	conn, _, err := websocket.Dial(context.Background(), wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	return conn
+}
+
+// readJSON reads a single text frame and unmarshals it into v.
+func readJSON(t *testing.T, conn *websocket.Conn, v any) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	mt, data, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatalf("conn.Read: %v", err)
+	}
+	if mt != websocket.MessageText {
+		t.Fatalf("expected text frame, got %v", mt)
+	}
+	if err := json.Unmarshal(data, v); err != nil {
+		t.Fatalf("unmarshal: %v (raw: %s)", err, data)
+	}
+}
+
+// writeJSON sends v as a JSON text frame.
+func writeJSON(t *testing.T, conn *websocket.Conn, v any) {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := conn.Write(context.Background(), websocket.MessageText, b); err != nil {
+		t.Fatalf("conn.Write: %v", err)
+	}
+}
+
+// startMsg builds a minimal start message for use in tests.
+func startMsg(sessionID string) wsStartMessage {
+	return wsStartMessage{
+		Type:         "start",
+		SessionID:    sessionID,
+		LanguageCode: "en",
+		SampleRate:   16000,
+	}
+}
+
+// ── tests ─────────────────────────────────────────────────────────────────────
+
+// TestWebSocket_BinaryFirstFrame verifies that a binary first frame is rejected.
+func TestWebSocket_BinaryFirstFrame(t *testing.T) {
+	sm := session.NewManager(wsTestConfig(), nil)
+	h := NewWebSocketHandler(0, sm, nil, nil, nil, nil, 0, nil)
+	srv := wsTestServer(h)
+	defer srv.Close()
+
+	conn := dialWS(t, srv)
+	defer conn.CloseNow()
+
+	// Send binary frame as first message.
+	if err := conn.Write(context.Background(), websocket.MessageBinary, []byte{0x01, 0x02}); err != nil {
+		t.Fatalf("write binary: %v", err)
+	}
+
+	var errMsg wsErrorMessage
+	readJSON(t, conn, &errMsg)
+	if errMsg.Type != "error" {
+		t.Errorf("type = %q, want error", errMsg.Type)
+	}
+}
+
+// TestWebSocket_InvalidJSON verifies that a malformed JSON first frame is rejected.
+func TestWebSocket_InvalidJSON(t *testing.T) {
+	sm := session.NewManager(wsTestConfig(), nil)
+	h := NewWebSocketHandler(0, sm, nil, nil, nil, nil, 0, nil)
+	srv := wsTestServer(h)
+	defer srv.Close()
+
+	conn := dialWS(t, srv)
+	defer conn.CloseNow()
+
+	if err := conn.Write(context.Background(), websocket.MessageText, []byte(`not json`)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	var errMsg wsErrorMessage
+	readJSON(t, conn, &errMsg)
+	if errMsg.Type != "error" {
+		t.Errorf("type = %q, want error", errMsg.Type)
+	}
+}
+
+// TestWebSocket_UnknownType verifies that an unknown type field is rejected.
+func TestWebSocket_UnknownType(t *testing.T) {
+	sm := session.NewManager(wsTestConfig(), nil)
+	h := NewWebSocketHandler(0, sm, nil, nil, nil, nil, 0, nil)
+	srv := wsTestServer(h)
+	defer srv.Close()
+
+	conn := dialWS(t, srv)
+	defer conn.CloseNow()
+
+	writeJSON(t, conn, map[string]string{"type": "unknown"})
+
+	var errMsg wsErrorMessage
+	readJSON(t, conn, &errMsg)
+	if errMsg.Type != "error" {
+		t.Errorf("type = %q, want error", errMsg.Type)
+	}
+}
+
+// TestWebSocket_Start_SessionCreated verifies that a valid start message creates
+// a session and returns a session confirmed frame.
+func TestWebSocket_Start_SessionCreated(t *testing.T) {
+	sm := session.NewManager(wsTestConfig(), nil)
+	h := NewWebSocketHandler(0, sm, nil, nil, nil, nil, 0, nil)
+	srv := wsTestServer(h)
+	defer srv.Close()
+
+	conn := dialWS(t, srv)
+	defer conn.CloseNow()
+
+	writeJSON(t, conn, startMsg("sess-start"))
+
+	var sessMsg wsSessionMessage
+	readJSON(t, conn, &sessMsg)
+	if sessMsg.Type != "session" {
+		t.Errorf("type = %q, want session", sessMsg.Type)
+	}
+	if sessMsg.SessionID != "sess-start" {
+		t.Errorf("session_id = %q, want sess-start", sessMsg.SessionID)
+	}
+	if sm.ActiveCount() != 1 {
+		t.Errorf("ActiveCount = %d, want 1", sm.ActiveCount())
+	}
+}
+
+// TestWebSocket_Start_ResumeTokenPresent verifies that when resumeTimeout > 0
+// the session confirmed frame includes a non-empty resume_token.
+func TestWebSocket_Start_ResumeTokenPresent(t *testing.T) {
+	sm := session.NewManager(wsTestConfig(), nil)
+	h := NewWebSocketHandler(0, sm, nil, nil, nil, nil, 30*time.Second, nil)
+	srv := wsTestServer(h)
+	defer srv.Close()
+
+	conn := dialWS(t, srv)
+	defer conn.CloseNow()
+
+	writeJSON(t, conn, startMsg("sess-token"))
+
+	var sessMsg wsSessionMessage
+	readJSON(t, conn, &sessMsg)
+	if sessMsg.ResumeToken == "" {
+		t.Error("resume_token is empty; expected a non-empty token when resumeTimeout > 0")
+	}
+}
+
+// TestWebSocket_Resume_Disabled verifies that a resume message is rejected when
+// resumeTimeout is 0.
+func TestWebSocket_Resume_Disabled(t *testing.T) {
+	sm := session.NewManager(wsTestConfig(), nil)
+	h := NewWebSocketHandler(0, sm, nil, nil, nil, nil, 0, nil)
+	srv := wsTestServer(h)
+	defer srv.Close()
+
+	conn := dialWS(t, srv)
+	defer conn.CloseNow()
+
+	writeJSON(t, conn, wsResumeMessage{
+		Type:        "resume",
+		SessionID:   "any",
+		ResumeToken: "any",
+	})
+
+	var errMsg wsErrorMessage
+	readJSON(t, conn, &errMsg)
+	if errMsg.Type != "error" {
+		t.Errorf("type = %q, want error", errMsg.Type)
+	}
+}
+
+// TestWebSocket_Resume_InvalidToken verifies that a resume with a wrong token
+// is rejected with an error frame.
+func TestWebSocket_Resume_InvalidToken(t *testing.T) {
+	sm := session.NewManager(wsTestConfig(), nil)
+	timeout := 30 * time.Second
+	h := NewWebSocketHandler(0, sm, nil, nil, nil, nil, timeout, nil)
+	srv := wsTestServer(h)
+	defer srv.Close()
+
+	// Create and park a session by starting, then disconnecting.
+	cfg := wsTestConfig()
+	cfg.Server.ResumableSessionTimeoutSec = 30
+	_ = cfg.Validate()
+	sm2 := session.NewManager(cfg, nil)
+	h2 := NewWebSocketHandler(0, sm2, nil, nil, nil, nil, timeout, nil)
+	srv2 := wsTestServer(h2)
+	defer srv2.Close()
+
+	// Start a session on srv2 to get a real session ID.
+	conn1 := dialWS(t, srv2)
+	writeJSON(t, conn1, startMsg("sess-resume"))
+	var sessMsg wsSessionMessage
+	readJSON(t, conn1, &sessMsg)
+	// Abruptly close (simulates unexpected disconnect) → session parks.
+	conn1.CloseNow()
+	time.Sleep(50 * time.Millisecond) // give server time to park
+
+	// Reconnect with wrong token.
+	conn2 := dialWS(t, srv2)
+	defer conn2.CloseNow()
+	writeJSON(t, conn2, wsResumeMessage{
+		Type:        "resume",
+		SessionID:   "sess-resume",
+		ResumeToken: "wrong-token",
+	})
+
+	var errMsg wsErrorMessage
+	readJSON(t, conn2, &errMsg)
+	if errMsg.Type != "error" {
+		t.Errorf("type = %q, want error", errMsg.Type)
+	}
+	if errMsg.Code != "ERR1019" {
+		t.Errorf("code = %q, want ERR1019", errMsg.Code)
+	}
+}
+
+// TestWebSocket_Resume_Success verifies that a valid resume reconnects to the
+// parked session and receives a session confirmed frame with the same token.
+func TestWebSocket_Resume_Success(t *testing.T) {
+	cfg := wsTestConfig()
+	cfg.Server.ResumableSessionTimeoutSec = 30
+	_ = cfg.Validate()
+	sm := session.NewManager(cfg, nil)
+	timeout := 30 * time.Second
+	h := NewWebSocketHandler(0, sm, nil, nil, nil, nil, timeout, nil)
+	srv := wsTestServer(h)
+	defer srv.Close()
+
+	// Open session, grab resume token, then abruptly close.
+	conn1 := dialWS(t, srv)
+	writeJSON(t, conn1, startMsg("sess-res-ok"))
+	var sessMsg1 wsSessionMessage
+	readJSON(t, conn1, &sessMsg1)
+	token := sessMsg1.ResumeToken
+	if token == "" {
+		t.Fatal("resume_token is empty; cannot resume")
+	}
+	conn1.CloseNow()
+	time.Sleep(50 * time.Millisecond) // give server time to park
+
+	// Reconnect with valid token.
+	conn2 := dialWS(t, srv)
+	defer conn2.CloseNow()
+	writeJSON(t, conn2, wsResumeMessage{
+		Type:        "resume",
+		SessionID:   "sess-res-ok",
+		ResumeToken: token,
+	})
+
+	var sessMsg2 wsSessionMessage
+	readJSON(t, conn2, &sessMsg2)
+	if sessMsg2.Type != "session" {
+		t.Errorf("type = %q, want session", sessMsg2.Type)
+	}
+	if sessMsg2.SessionID != "sess-res-ok" {
+		t.Errorf("session_id = %q, want sess-res-ok", sessMsg2.SessionID)
+	}
+	if sessMsg2.ResumeToken != token {
+		t.Errorf("resume_token changed after resume: got %q, want %q", sessMsg2.ResumeToken, token)
+	}
+}
