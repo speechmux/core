@@ -1,0 +1,24 @@
+# Core plugin configuration — Dummy engines (load testing, no model required)
+# Use with: speechmux-core --plugins config/plugins-dummy.yaml
+# Start plugins first: make run-dummy-vad run-dummy-stt
+
+vad:
+  endpoints:              # VAD plugin endpoint pool.
+    - id: "vad-dummy"    # Unique ID for this endpoint; appears in health check reports.
+      socket: "/tmp/speechmux/vad.sock"  # Unix domain socket path. Must match server.socket in vad-dummy.yaml.
+  health_check_interval_sec: 10  # Interval (seconds) between health probes to each VAD endpoint.
+  circuit_breaker:
+    failure_threshold: 5          # Consecutive failures before the circuit opens.
+    half_open_timeout_sec: 30     # Seconds in OPEN state before a single probe request is allowed through.
+
+inference:
+  routing_mode: "least_connections"  # Routing strategy: round_robin | least_connections | active_standby.
+  endpoints:                         # STT inference endpoint pool.
+    - id: "stt-dummy"                # Unique ID for this endpoint; used in health reports and routing.
+      socket: "/tmp/speechmux/stt-dummy.sock"  # Unix domain socket path. Must match server.socket in inference-dummy.yaml.
+      priority: 1                    # Priority for active_standby routing. Higher = preferred.
+  health_check_interval_sec: 10     # Interval (seconds) between health probes to each inference endpoint.
+  health_probe_timeout_sec: 5       # Per-probe gRPC HealthCheck timeout (seconds).
+  circuit_breaker:
+    failure_threshold: 5            # Consecutive failures before the circuit opens.
+    half_open_timeout_sec: 30       # Seconds to wait in OPEN before attempting HALF_OPEN recovery probe.
