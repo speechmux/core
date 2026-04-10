@@ -12,6 +12,7 @@ import (
 	commonpb "github.com/speechmux/proto/gen/go/common/v1"
 	inferencepb "github.com/speechmux/proto/gen/go/inference/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // ── stub InferencePlugin servers ──────────────────────────────────────────────
@@ -25,7 +26,7 @@ type countingInferenceServer struct {
 }
 
 func (s *countingInferenceServer) HealthCheck(
-	_ context.Context, _ *inferencepb.Empty,
+	_ context.Context, _ *emptypb.Empty,
 ) (*commonpb.PluginHealthStatus, error) {
 	return &commonpb.PluginHealthStatus{State: commonpb.PluginState_PLUGIN_STATE_READY}, nil
 }

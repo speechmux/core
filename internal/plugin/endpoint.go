@@ -10,6 +10,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/types/known/emptypb"
 
 	commonpb "github.com/speechmux/proto/gen/go/common/v1"
 	inferencepb "github.com/speechmux/proto/gen/go/inference/v1"
@@ -148,9 +149,9 @@ func (e *Endpoint) CircuitState() string {
 // HealthCheckProbe calls the VAD plugin's HealthCheck RPC and returns the
 // plugin state. Implements runtime.vadHealthProber.
 func (e *Endpoint) HealthCheckProbe(ctx context.Context) (commonpb.PluginState, error) {
-	resp, err := e.VADPluginClient().HealthCheck(ctx, &vadpb.Empty{})
+	resp, err := e.VADPluginClient().HealthCheck(ctx, &emptypb.Empty{})
 	if err != nil {
-		return commonpb.PluginState_PLUGIN_STATE_UNKNOWN, fmt.Errorf("VAD health check: %w", err)
+		return commonpb.PluginState_PLUGIN_STATE_UNSPECIFIED, fmt.Errorf("VAD health check: %w", err)
 	}
 	return resp.GetState(), nil
 }

@@ -20,6 +20,7 @@ import (
 	inferencepb "github.com/speechmux/proto/gen/go/inference/v1"
 	vadpb "github.com/speechmux/proto/gen/go/vad/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -101,11 +102,11 @@ type epdVADServer struct {
 	vadpb.UnimplementedVADPluginServer
 }
 
-func (s *epdVADServer) HealthCheck(_ context.Context, _ *vadpb.Empty) (*commonpb.PluginHealthStatus, error) {
+func (s *epdVADServer) HealthCheck(_ context.Context, _ *emptypb.Empty) (*commonpb.PluginHealthStatus, error) {
 	return &commonpb.PluginHealthStatus{State: commonpb.PluginState_PLUGIN_STATE_READY}, nil
 }
 
-func (s *epdVADServer) GetCapabilities(_ context.Context, _ *vadpb.Empty) (*vadpb.VADCapabilities, error) {
+func (s *epdVADServer) GetCapabilities(_ context.Context, _ *emptypb.Empty) (*vadpb.VADCapabilities, error) {
 	return &vadpb.VADCapabilities{OptimalFrameMs: 30}, nil
 }
 
@@ -137,7 +138,7 @@ type helloSTTServer struct {
 	inferencepb.UnimplementedInferencePluginServer
 }
 
-func (s *helloSTTServer) HealthCheck(_ context.Context, _ *inferencepb.Empty) (*commonpb.PluginHealthStatus, error) {
+func (s *helloSTTServer) HealthCheck(_ context.Context, _ *emptypb.Empty) (*commonpb.PluginHealthStatus, error) {
 	return &commonpb.PluginHealthStatus{State: commonpb.PluginState_PLUGIN_STATE_READY}, nil
 }
 
@@ -223,11 +224,11 @@ type failAfterNVADServer struct {
 	maxFrames int
 }
 
-func (s *failAfterNVADServer) HealthCheck(_ context.Context, _ *vadpb.Empty) (*commonpb.PluginHealthStatus, error) {
+func (s *failAfterNVADServer) HealthCheck(_ context.Context, _ *emptypb.Empty) (*commonpb.PluginHealthStatus, error) {
 	return &commonpb.PluginHealthStatus{State: commonpb.PluginState_PLUGIN_STATE_READY}, nil
 }
 
-func (s *failAfterNVADServer) GetCapabilities(_ context.Context, _ *vadpb.Empty) (*vadpb.VADCapabilities, error) {
+func (s *failAfterNVADServer) GetCapabilities(_ context.Context, _ *emptypb.Empty) (*vadpb.VADCapabilities, error) {
 	return &vadpb.VADCapabilities{OptimalFrameMs: 30}, nil
 }
 
@@ -300,11 +301,11 @@ type echoVADServer struct {
 	vadpb.UnimplementedVADPluginServer
 }
 
-func (s *echoVADServer) HealthCheck(_ context.Context, _ *vadpb.Empty) (*commonpb.PluginHealthStatus, error) {
+func (s *echoVADServer) HealthCheck(_ context.Context, _ *emptypb.Empty) (*commonpb.PluginHealthStatus, error) {
 	return &commonpb.PluginHealthStatus{State: commonpb.PluginState_PLUGIN_STATE_READY}, nil
 }
 
-func (s *echoVADServer) GetCapabilities(_ context.Context, _ *vadpb.Empty) (*vadpb.VADCapabilities, error) {
+func (s *echoVADServer) GetCapabilities(_ context.Context, _ *emptypb.Empty) (*vadpb.VADCapabilities, error) {
 	return &vadpb.VADCapabilities{OptimalFrameMs: 30}, nil
 }
 

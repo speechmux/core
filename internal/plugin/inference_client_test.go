@@ -10,6 +10,7 @@ import (
 	commonpb "github.com/speechmux/proto/gen/go/common/v1"
 	inferencepb "github.com/speechmux/proto/gen/go/inference/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // ── mock InferencePluginClient ────────────────────────────────────────────────
@@ -19,8 +20,8 @@ import (
 // can inject behaviour without needing a real gRPC server.
 type mockInferencePlugin struct {
 	transcribeFn    func(ctx context.Context, req *inferencepb.TranscribeRequest, opts ...grpc.CallOption) (*inferencepb.TranscribeResponse, error)
-	capabilitiesFn  func(ctx context.Context, req *inferencepb.Empty, opts ...grpc.CallOption) (*inferencepb.InferenceCapabilities, error)
-	healthCheckFn   func(ctx context.Context, req *inferencepb.Empty, opts ...grpc.CallOption) (*commonpb.PluginHealthStatus, error)
+	capabilitiesFn  func(ctx context.Context, req *emptypb.Empty, opts ...grpc.CallOption) (*inferencepb.InferenceCapabilities, error)
+	healthCheckFn   func(ctx context.Context, req *emptypb.Empty, opts ...grpc.CallOption) (*commonpb.PluginHealthStatus, error)
 }
 
 func (m *mockInferencePlugin) Transcribe(ctx context.Context, req *inferencepb.TranscribeRequest, opts ...grpc.CallOption) (*inferencepb.TranscribeResponse, error) {
@@ -30,14 +31,14 @@ func (m *mockInferencePlugin) Transcribe(ctx context.Context, req *inferencepb.T
 	return nil, errors.New("transcribeFn not set")
 }
 
-func (m *mockInferencePlugin) GetCapabilities(ctx context.Context, req *inferencepb.Empty, opts ...grpc.CallOption) (*inferencepb.InferenceCapabilities, error) {
+func (m *mockInferencePlugin) GetCapabilities(ctx context.Context, req *emptypb.Empty, opts ...grpc.CallOption) (*inferencepb.InferenceCapabilities, error) {
 	if m.capabilitiesFn != nil {
 		return m.capabilitiesFn(ctx, req, opts...)
 	}
 	return nil, errors.New("capabilitiesFn not set")
 }
 
-func (m *mockInferencePlugin) HealthCheck(ctx context.Context, req *inferencepb.Empty, opts ...grpc.CallOption) (*commonpb.PluginHealthStatus, error) {
+func (m *mockInferencePlugin) HealthCheck(ctx context.Context, req *emptypb.Empty, opts ...grpc.CallOption) (*commonpb.PluginHealthStatus, error) {
 	if m.healthCheckFn != nil {
 		return m.healthCheckFn(ctx, req, opts...)
 	}
@@ -175,7 +176,7 @@ func TestInferenceClient_Transcribe_RPCError_WrapsOriginalError(t *testing.T) {
 func TestInferenceClient_HealthCheck_Success(t *testing.T) {
 	want := commonpb.PluginState_PLUGIN_STATE_READY
 	mock := &mockInferencePlugin{
-		healthCheckFn: func(_ context.Context, _ *inferencepb.Empty, _ ...grpc.CallOption) (*commonpb.PluginHealthStatus, error) {
+		healthCheckFn: func(_ context.Context, _ *emptypb.Empty, _ ...grpc.CallOption) (*commonpb.PluginHealthStatus, error) {
 			return &commonpb.PluginHealthStatus{State: want}, nil
 		},
 	}
@@ -193,7 +194,7 @@ func TestInferenceClient_HealthCheck_Success(t *testing.T) {
 func TestInferenceClient_HealthCheck_Error_RecordsFailure(t *testing.T) {
 	sentinel := errors.New("health check failed")
 	mock := &mockInferencePlugin{
-		healthCheckFn: func(_ context.Context, _ *inferencepb.Empty, _ ...grpc.CallOption) (*commonpb.PluginHealthStatus, error) {
+		healthCheckFn: func(_ context.Context, _ *emptypb.Empty, _ ...grpc.CallOption) (*commonpb.PluginHealthStatus, error) {
 			return nil, sentinel
 		},
 	}
@@ -211,7 +212,7 @@ func TestInferenceClient_HealthCheck_Error_RecordsFailure(t *testing.T) {
 func TestInferenceClient_HealthCheck_Error_WrapsOriginalError(t *testing.T) {
 	sentinel := errors.New("dial timeout")
 	mock := &mockInferencePlugin{
-		healthCheckFn: func(_ context.Context, _ *inferencepb.Empty, _ ...grpc.CallOption) (*commonpb.PluginHealthStatus, error) {
+		healthCheckFn: func(_ context.Context, _ *emptypb.Empty, _ ...grpc.CallOption) (*commonpb.PluginHealthStatus, error) {
 			return nil, sentinel
 		},
 	}
@@ -228,7 +229,7 @@ func TestInferenceClient_HealthCheck_Error_WrapsOriginalError(t *testing.T) {
 func TestInferenceClient_HealthCheckProbe_Success(t *testing.T) {
 	want := commonpb.PluginState_PLUGIN_STATE_READY
 	mock := &mockInferencePlugin{
-		healthCheckFn: func(_ context.Context, _ *inferencepb.Empty, _ ...grpc.CallOption) (*commonpb.PluginHealthStatus, error) {
+		healthCheckFn: func(_ context.Context, _ *emptypb.Empty, _ ...grpc.CallOption) (*commonpb.PluginHealthStatus, error) {
 			return &commonpb.PluginHealthStatus{State: want}, nil
 		},
 	}
@@ -252,7 +253,7 @@ func TestInferenceClient_HealthCheckProbe_Success(t *testing.T) {
 func TestInferenceClient_HealthCheckProbe_Error_ReturnsUnknownState(t *testing.T) {
 	sentinel := errors.New("plugin gone")
 	mock := &mockInferencePlugin{
-		healthCheckFn: func(_ context.Context, _ *inferencepb.Empty, _ ...grpc.CallOption) (*commonpb.PluginHealthStatus, error) {
+		healthCheckFn: func(_ context.Context, _ *emptypb.Empty, _ ...grpc.CallOption) (*commonpb.PluginHealthStatus, error) {
 			return nil, sentinel
 		},
 	}
@@ -265,15 +266,15 @@ func TestInferenceClient_HealthCheckProbe_Error_ReturnsUnknownState(t *testing.T
 	if id != "infer-mock" {
 		t.Fatalf("id = %q, want %q", id, "infer-mock")
 	}
-	if state != commonpb.PluginState_PLUGIN_STATE_UNKNOWN {
-		t.Fatalf("state = %v on error, want PLUGIN_STATE_UNKNOWN", state)
+	if state != commonpb.PluginState_PLUGIN_STATE_UNSPECIFIED {
+		t.Fatalf("state = %v on error, want PLUGIN_STATE_UNSPECIFIED", state)
 	}
 }
 
 func TestInferenceClient_HealthCheckProbe_ReflectsCircuitBreakerHealth(t *testing.T) {
 	// Open the circuit before probing; cbHealthy must reflect the open state.
 	mock := &mockInferencePlugin{
-		healthCheckFn: func(_ context.Context, _ *inferencepb.Empty, _ ...grpc.CallOption) (*commonpb.PluginHealthStatus, error) {
+		healthCheckFn: func(_ context.Context, _ *emptypb.Empty, _ ...grpc.CallOption) (*commonpb.PluginHealthStatus, error) {
 			return nil, errors.New("error")
 		},
 	}
@@ -295,7 +296,7 @@ func TestInferenceClient_HealthCheckProbe_ReflectsCircuitBreakerHealth(t *testin
 
 func TestInferenceClient_FetchCapabilities_Success(t *testing.T) {
 	mock := &mockInferencePlugin{
-		capabilitiesFn: func(_ context.Context, _ *inferencepb.Empty, _ ...grpc.CallOption) (*inferencepb.InferenceCapabilities, error) {
+		capabilitiesFn: func(_ context.Context, _ *emptypb.Empty, _ ...grpc.CallOption) (*inferencepb.InferenceCapabilities, error) {
 			return &inferencepb.InferenceCapabilities{
 				EngineName: "mlx_whisper",
 				ModelSize:  "large-v3-turbo",
@@ -322,7 +323,7 @@ func TestInferenceClient_FetchCapabilities_Success(t *testing.T) {
 func TestInferenceClient_FetchCapabilities_Error_ReturnsError(t *testing.T) {
 	sentinel := errors.New("plugin not ready")
 	mock := &mockInferencePlugin{
-		capabilitiesFn: func(_ context.Context, _ *inferencepb.Empty, _ ...grpc.CallOption) (*inferencepb.InferenceCapabilities, error) {
+		capabilitiesFn: func(_ context.Context, _ *emptypb.Empty, _ ...grpc.CallOption) (*inferencepb.InferenceCapabilities, error) {
 			return nil, sentinel
 		},
 	}

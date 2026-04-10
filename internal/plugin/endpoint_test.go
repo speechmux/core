@@ -10,6 +10,7 @@ import (
 	commonpb "github.com/speechmux/proto/gen/go/common/v1"
 	vadpb "github.com/speechmux/proto/gen/go/vad/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -221,18 +222,18 @@ func TestEndpoint_ID(t *testing.T) {
 
 // mockVADPluginClient is a hand-rolled mock for vadpb.VADPluginClient.
 type mockVADPluginClient struct {
-	healthCheckFn func(ctx context.Context, in *vadpb.Empty, opts ...grpc.CallOption) (*commonpb.PluginHealthStatus, error)
+	healthCheckFn func(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*commonpb.PluginHealthStatus, error)
 }
 
 func (m *mockVADPluginClient) StreamVAD(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[vadpb.VADRequest, vadpb.VADResponse], error) {
 	return nil, errors.New("not implemented in mock")
 }
 
-func (m *mockVADPluginClient) GetCapabilities(ctx context.Context, in *vadpb.Empty, opts ...grpc.CallOption) (*vadpb.VADCapabilities, error) {
+func (m *mockVADPluginClient) GetCapabilities(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*vadpb.VADCapabilities, error) {
 	return nil, errors.New("not implemented in mock")
 }
 
-func (m *mockVADPluginClient) HealthCheck(ctx context.Context, in *vadpb.Empty, opts ...grpc.CallOption) (*commonpb.PluginHealthStatus, error) {
+func (m *mockVADPluginClient) HealthCheck(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*commonpb.PluginHealthStatus, error) {
 	return m.healthCheckFn(ctx, in, opts...)
 }
 
@@ -244,9 +245,9 @@ type endpointWithMockVAD struct {
 }
 
 func (e *endpointWithMockVAD) HealthCheckProbe(ctx context.Context) (commonpb.PluginState, error) {
-	resp, err := e.mockClient.HealthCheck(ctx, &vadpb.Empty{})
+	resp, err := e.mockClient.HealthCheck(ctx, &emptypb.Empty{})
 	if err != nil {
-		return commonpb.PluginState_PLUGIN_STATE_UNKNOWN, err
+		return commonpb.PluginState_PLUGIN_STATE_UNSPECIFIED, err
 	}
 	return resp.GetState(), nil
 }
@@ -254,7 +255,7 @@ func (e *endpointWithMockVAD) HealthCheckProbe(ctx context.Context) (commonpb.Pl
 func TestEndpoint_HealthCheckProbe_Success(t *testing.T) {
 	want := commonpb.PluginState_PLUGIN_STATE_READY
 	mock := &mockVADPluginClient{
-		healthCheckFn: func(_ context.Context, _ *vadpb.Empty, _ ...grpc.CallOption) (*commonpb.PluginHealthStatus, error) {
+		healthCheckFn: func(_ context.Context, _ *emptypb.Empty, _ ...grpc.CallOption) (*commonpb.PluginHealthStatus, error) {
 			return &commonpb.PluginHealthStatus{State: want}, nil
 		},
 	}
@@ -275,7 +276,7 @@ func TestEndpoint_HealthCheckProbe_Success(t *testing.T) {
 func TestEndpoint_HealthCheckProbe_Error(t *testing.T) {
 	sentinel := errors.New("vad unreachable")
 	mock := &mockVADPluginClient{
-		healthCheckFn: func(_ context.Context, _ *vadpb.Empty, _ ...grpc.CallOption) (*commonpb.PluginHealthStatus, error) {
+		healthCheckFn: func(_ context.Context, _ *emptypb.Empty, _ ...grpc.CallOption) (*commonpb.PluginHealthStatus, error) {
 			return nil, sentinel
 		},
 	}
@@ -288,7 +289,7 @@ func TestEndpoint_HealthCheckProbe_Error(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if state != commonpb.PluginState_PLUGIN_STATE_UNKNOWN {
-		t.Fatalf("state = %v on error, want PLUGIN_STATE_UNKNOWN", state)
+	if state != commonpb.PluginState_PLUGIN_STATE_UNSPECIFIED {
+		t.Fatalf("state = %v on error, want PLUGIN_STATE_UNSPECIFIED", state)
 	}
 }

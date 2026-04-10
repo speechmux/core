@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sync/atomic"
 
+	"google.golang.org/protobuf/types/known/emptypb"
+
 	commonpb "github.com/speechmux/proto/gen/go/common/v1"
 	inferencepb "github.com/speechmux/proto/gen/go/inference/v1"
 )
@@ -37,7 +39,7 @@ func NewInferenceClient(ep *Endpoint) *InferenceClient {
 // Called once after endpoint registration; errors are non-fatal — the endpoint
 // remains usable but engine info fields will be empty strings.
 func (c *InferenceClient) FetchCapabilities(ctx context.Context) error {
-	resp, err := c.stub.GetCapabilities(ctx, &inferencepb.Empty{})
+	resp, err := c.stub.GetCapabilities(ctx, &emptypb.Empty{})
 	if err != nil {
 		return fmt.Errorf("inference endpoint %s: GetCapabilities: %w", c.endpoint.ID(), err)
 	}
@@ -85,7 +87,7 @@ func (c *InferenceClient) Transcribe(
 
 // HealthCheck probes the plugin's current state.
 func (c *InferenceClient) HealthCheck(ctx context.Context) (*commonpb.PluginHealthStatus, error) {
-	status, err := c.stub.HealthCheck(ctx, &inferencepb.Empty{})
+	status, err := c.stub.HealthCheck(ctx, &emptypb.Empty{})
 	if err != nil {
 		c.endpoint.RecordFailure()
 		return nil, fmt.Errorf("inference endpoint %s: health check: %w", c.endpoint.ID(), err)
@@ -103,7 +105,7 @@ func (c *InferenceClient) HealthCheckProbe(
 ) (string, commonpb.PluginState, bool, error) {
 	status, err := c.HealthCheck(ctx)
 	if err != nil {
-		return c.endpoint.ID(), commonpb.PluginState_PLUGIN_STATE_UNKNOWN,
+		return c.endpoint.ID(), commonpb.PluginState_PLUGIN_STATE_UNSPECIFIED,
 			c.endpoint.IsHealthy(), err
 	}
 	return c.endpoint.ID(), status.GetState(), c.endpoint.IsHealthy(), nil

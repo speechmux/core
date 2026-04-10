@@ -209,8 +209,8 @@ func TestGRPCServer_TLS(t *testing.T) {
 
 	// Send a non-config first message to trigger ERR1016.
 	// A gRPC error response confirms the TLS handshake succeeded.
-	_ = stream.Send(&clientpb.StreamingRequest{
-		StreamingRequest: &clientpb.StreamingRequest_Audio{
+	_ = stream.Send(&clientpb.StreamingRecognizeRequest{
+		StreamingRequest: &clientpb.StreamingRecognizeRequest_Audio{
 			Audio: []byte("hi"),
 		},
 	})
@@ -250,8 +250,8 @@ func TestGRPCServer_TLS_RejectsPlaintext(t *testing.T) {
 	}
 	defer stream.CloseSend()
 
-	_ = stream.Send(&clientpb.StreamingRequest{
-		StreamingRequest: &clientpb.StreamingRequest_Signal{
+	_ = stream.Send(&clientpb.StreamingRecognizeRequest{
+		StreamingRequest: &clientpb.StreamingRecognizeRequest_Signal{
 			Signal: &clientpb.StreamSignal{IsLast: true},
 		},
 	})

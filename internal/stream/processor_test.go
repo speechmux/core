@@ -12,6 +12,7 @@ import (
 	commonpb "github.com/speechmux/proto/gen/go/common/v1"
 	inferencepb "github.com/speechmux/proto/gen/go/inference/v1"
 	vadpb "github.com/speechmux/proto/gen/go/vad/v1"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // ── VAD stub: speech for frames 1–25, silence for 26+ ────────────────────────
@@ -22,11 +23,11 @@ type speechThenSilenceVAD struct {
 	vadpb.UnimplementedVADPluginServer
 }
 
-func (s *speechThenSilenceVAD) HealthCheck(_ context.Context, _ *vadpb.Empty) (*commonpb.PluginHealthStatus, error) {
+func (s *speechThenSilenceVAD) HealthCheck(_ context.Context, _ *emptypb.Empty) (*commonpb.PluginHealthStatus, error) {
 	return &commonpb.PluginHealthStatus{State: commonpb.PluginState_PLUGIN_STATE_READY}, nil
 }
 
-func (s *speechThenSilenceVAD) GetCapabilities(_ context.Context, _ *vadpb.Empty) (*vadpb.VADCapabilities, error) {
+func (s *speechThenSilenceVAD) GetCapabilities(_ context.Context, _ *emptypb.Empty) (*vadpb.VADCapabilities, error) {
 	return &vadpb.VADCapabilities{OptimalFrameMs: 30}, nil
 }
 
@@ -58,11 +59,11 @@ type alwaysSilenceVAD struct {
 	vadpb.UnimplementedVADPluginServer
 }
 
-func (s *alwaysSilenceVAD) HealthCheck(_ context.Context, _ *vadpb.Empty) (*commonpb.PluginHealthStatus, error) {
+func (s *alwaysSilenceVAD) HealthCheck(_ context.Context, _ *emptypb.Empty) (*commonpb.PluginHealthStatus, error) {
 	return &commonpb.PluginHealthStatus{State: commonpb.PluginState_PLUGIN_STATE_READY}, nil
 }
 
-func (s *alwaysSilenceVAD) GetCapabilities(_ context.Context, _ *vadpb.Empty) (*vadpb.VADCapabilities, error) {
+func (s *alwaysSilenceVAD) GetCapabilities(_ context.Context, _ *emptypb.Empty) (*vadpb.VADCapabilities, error) {
 	return &vadpb.VADCapabilities{OptimalFrameMs: 30}, nil
 }
 
@@ -92,7 +93,7 @@ type fixedTextSTT struct {
 	text string
 }
 
-func (s *fixedTextSTT) HealthCheck(_ context.Context, _ *inferencepb.Empty) (*commonpb.PluginHealthStatus, error) {
+func (s *fixedTextSTT) HealthCheck(_ context.Context, _ *emptypb.Empty) (*commonpb.PluginHealthStatus, error) {
 	return &commonpb.PluginHealthStatus{State: commonpb.PluginState_PLUGIN_STATE_READY}, nil
 }
 

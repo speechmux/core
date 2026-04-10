@@ -76,7 +76,7 @@ func TestPluginStateName_AllEnumValues(t *testing.T) {
 		{commonpb.PluginState_PLUGIN_STATE_ERROR, "ERROR"},
 		// DRAINING and UNKNOWN fall through to the default branch.
 		{commonpb.PluginState_PLUGIN_STATE_DRAINING, "UNKNOWN"},
-		{commonpb.PluginState_PLUGIN_STATE_UNKNOWN, "UNKNOWN"},
+		{commonpb.PluginState_PLUGIN_STATE_UNSPECIFIED, "UNKNOWN"},
 		{commonpb.PluginState(999), "UNKNOWN"},
 	}
 

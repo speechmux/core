@@ -92,9 +92,9 @@ func (p *countingProcessor) ProcessSession(_ context.Context, sess *session.Sess
 
 // ── message helpers ───────────────────────────────────────────────────────────
 
-func sessionConfigMsg(sessionID, lang string) *clientpb.StreamingRequest {
-	return &clientpb.StreamingRequest{
-		StreamingRequest: &clientpb.StreamingRequest_SessionConfig{
+func sessionConfigMsg(sessionID, lang string) *clientpb.StreamingRecognizeRequest {
+	return &clientpb.StreamingRecognizeRequest{
+		StreamingRequest: &clientpb.StreamingRecognizeRequest_SessionConfig{
 			SessionConfig: &clientpb.SessionConfig{
 				SessionId: sessionID,
 				RecognitionConfig: &clientpb.RecognitionConfig{
@@ -105,24 +105,24 @@ func sessionConfigMsg(sessionID, lang string) *clientpb.StreamingRequest {
 	}
 }
 
-func audioMsg(pcm []byte) *clientpb.StreamingRequest {
-	return &clientpb.StreamingRequest{
-		StreamingRequest: &clientpb.StreamingRequest_Audio{Audio: pcm},
+func audioMsg(pcm []byte) *clientpb.StreamingRecognizeRequest {
+	return &clientpb.StreamingRecognizeRequest{
+		StreamingRequest: &clientpb.StreamingRecognizeRequest_Audio{Audio: pcm},
 	}
 }
 
-func isLastMsg() *clientpb.StreamingRequest {
-	return &clientpb.StreamingRequest{
-		StreamingRequest: &clientpb.StreamingRequest_Signal{
+func isLastMsg() *clientpb.StreamingRecognizeRequest {
+	return &clientpb.StreamingRecognizeRequest{
+		StreamingRequest: &clientpb.StreamingRecognizeRequest_Signal{
 			Signal: &clientpb.StreamSignal{IsLast: true},
 		},
 	}
 }
 
 // recvAll reads all StreamingResponses until io.EOF and returns them.
-func recvAll(t *testing.T, stream clientpb.STTService_StreamingRecognizeClient) []*clientpb.StreamingResponse {
+func recvAll(t *testing.T, stream clientpb.STTService_StreamingRecognizeClient) []*clientpb.StreamingRecognizeResponse {
 	t.Helper()
-	var msgs []*clientpb.StreamingResponse
+	var msgs []*clientpb.StreamingRecognizeResponse
 	for {
 		msg, err := stream.Recv()
 		if err == io.EOF {

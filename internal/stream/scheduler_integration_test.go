@@ -18,6 +18,7 @@ import (
 	inferencepb "github.com/speechmux/proto/gen/go/inference/v1"
 	"google.golang.org/grpc/codes"
 	grpcStatus "google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // ── spy MetricsObserver ───────────────────────────────────────────────────────
@@ -49,11 +50,11 @@ type slowSTTServer struct {
 	latency time.Duration
 }
 
-func (s *slowSTTServer) HealthCheck(_ context.Context, _ *inferencepb.Empty) (*commonpb.PluginHealthStatus, error) {
+func (s *slowSTTServer) HealthCheck(_ context.Context, _ *emptypb.Empty) (*commonpb.PluginHealthStatus, error) {
 	return &commonpb.PluginHealthStatus{State: commonpb.PluginState_PLUGIN_STATE_READY}, nil
 }
 
-func (s *slowSTTServer) GetCapabilities(_ context.Context, _ *inferencepb.Empty) (*inferencepb.InferenceCapabilities, error) {
+func (s *slowSTTServer) GetCapabilities(_ context.Context, _ *emptypb.Empty) (*inferencepb.InferenceCapabilities, error) {
 	return &inferencepb.InferenceCapabilities{EngineName: "slow-stub", MaxConcurrentRequests: 8}, nil
 }
 
@@ -126,11 +127,11 @@ type errorSTTServer struct {
 	callCount atomic.Int64
 }
 
-func (s *errorSTTServer) HealthCheck(_ context.Context, _ *inferencepb.Empty) (*commonpb.PluginHealthStatus, error) {
+func (s *errorSTTServer) HealthCheck(_ context.Context, _ *emptypb.Empty) (*commonpb.PluginHealthStatus, error) {
 	return &commonpb.PluginHealthStatus{State: commonpb.PluginState_PLUGIN_STATE_READY}, nil
 }
 
-func (s *errorSTTServer) GetCapabilities(_ context.Context, _ *inferencepb.Empty) (*inferencepb.InferenceCapabilities, error) {
+func (s *errorSTTServer) GetCapabilities(_ context.Context, _ *emptypb.Empty) (*inferencepb.InferenceCapabilities, error) {
 	return &inferencepb.InferenceCapabilities{EngineName: "error-stub"}, nil
 }
 
@@ -194,11 +195,11 @@ type capableSTTServer struct {
 	inferencepb.UnimplementedInferencePluginServer
 }
 
-func (s *capableSTTServer) HealthCheck(_ context.Context, _ *inferencepb.Empty) (*commonpb.PluginHealthStatus, error) {
+func (s *capableSTTServer) HealthCheck(_ context.Context, _ *emptypb.Empty) (*commonpb.PluginHealthStatus, error) {
 	return &commonpb.PluginHealthStatus{State: commonpb.PluginState_PLUGIN_STATE_READY}, nil
 }
 
-func (s *capableSTTServer) GetCapabilities(_ context.Context, _ *inferencepb.Empty) (*inferencepb.InferenceCapabilities, error) {
+func (s *capableSTTServer) GetCapabilities(_ context.Context, _ *emptypb.Empty) (*inferencepb.InferenceCapabilities, error) {
 	return &inferencepb.InferenceCapabilities{
 		EngineName: "capable-engine",
 		ModelSize:  "large-v3",

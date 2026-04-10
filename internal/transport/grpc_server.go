@@ -110,8 +110,8 @@ func (s *GRPCServer) StreamingRecognize(stream clientpb.STTService_StreamingReco
 	defer s.sessions.CloseSession(sess.ID)
 
 	// 3. Send SessionCreated with negotiated settings.
-	if err := stream.Send(&clientpb.StreamingResponse{
-		StreamingResponse: &clientpb.StreamingResponse_SessionCreated{
+	if err := stream.Send(&clientpb.StreamingRecognizeResponse{
+		StreamingResponse: &clientpb.StreamingRecognizeResponse_SessionCreated{
 			SessionCreated: &clientpb.SessionCreated{
 				SessionId: sess.ID,
 				NegotiatedVad: &clientpb.VADConfig{
@@ -146,8 +146,8 @@ func (s *GRPCServer) StreamingRecognize(stream clientpb.STTService_StreamingReco
 				if !ok {
 					return
 				}
-				if err := stream.Send(&clientpb.StreamingResponse{
-					StreamingResponse: &clientpb.StreamingResponse_Result{
+				if err := stream.Send(&clientpb.StreamingRecognizeResponse{
+					StreamingResponse: &clientpb.StreamingRecognizeResponse_Result{
 						Result: result,
 					},
 				}); err != nil {
@@ -162,8 +162,8 @@ func (s *GRPCServer) StreamingRecognize(stream clientpb.STTService_StreamingReco
 						if !ok {
 							return
 						}
-						_ = stream.Send(&clientpb.StreamingResponse{
-							StreamingResponse: &clientpb.StreamingResponse_Result{
+						_ = stream.Send(&clientpb.StreamingRecognizeResponse{
+							StreamingResponse: &clientpb.StreamingRecognizeResponse_Result{
 								Result: result,
 							},
 						})
@@ -183,7 +183,7 @@ recvLoop:
 			break recvLoop // io.EOF or client disconnect
 		}
 		switch v := msg.GetStreamingRequest().(type) {
-		case *clientpb.StreamingRequest_Audio:
+		case *clientpb.StreamingRecognizeRequest_Audio:
 			sess.TouchActivity()
 			if s.processor != nil {
 				select {
@@ -192,7 +192,7 @@ recvLoop:
 					break recvLoop
 				}
 			}
-		case *clientpb.StreamingRequest_Signal:
+		case *clientpb.StreamingRecognizeRequest_Signal:
 			if v.Signal.GetIsLast() {
 				// Client has sent all audio — signal the pipeline to flush.
 				sess.SignalAudioEnd()

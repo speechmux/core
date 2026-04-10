@@ -208,8 +208,8 @@ func runSession(cfg *runConfig, conn *grpc.ClientConn, id string) sessionResult 
 
 	// Send SessionConfig (first message).
 	t0 := time.Now()
-	if err := stream.Send(&clientpb.StreamingRequest{
-		StreamingRequest: &clientpb.StreamingRequest_SessionConfig{
+	if err := stream.Send(&clientpb.StreamingRecognizeRequest{
+		StreamingRequest: &clientpb.StreamingRecognizeRequest_SessionConfig{
 			SessionConfig: &clientpb.SessionConfig{
 				SessionId: id,
 				RecognitionConfig: &clientpb.RecognitionConfig{
@@ -248,8 +248,8 @@ func runSession(cfg *runConfig, conn *grpc.ClientConn, id string) sessionResult 
 		chunkDur := time.Duration(cfg.chunkMs) * time.Millisecond
 
 		for time.Now().Before(deadline) {
-			if err := stream.Send(&clientpb.StreamingRequest{
-				StreamingRequest: &clientpb.StreamingRequest_Audio{Audio: silence},
+			if err := stream.Send(&clientpb.StreamingRecognizeRequest{
+				StreamingRequest: &clientpb.StreamingRecognizeRequest_Audio{Audio: silence},
 			}); err != nil {
 				sendDone <- err
 				return
@@ -257,8 +257,8 @@ func runSession(cfg *runConfig, conn *grpc.ClientConn, id string) sessionResult 
 			time.Sleep(chunkDur)
 		}
 		// Signal end-of-audio.
-		_ = stream.Send(&clientpb.StreamingRequest{
-			StreamingRequest: &clientpb.StreamingRequest_Signal{
+		_ = stream.Send(&clientpb.StreamingRecognizeRequest{
+			StreamingRequest: &clientpb.StreamingRecognizeRequest_Signal{
 				Signal: &clientpb.StreamSignal{IsLast: true},
 			},
 		})

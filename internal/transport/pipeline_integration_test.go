@@ -29,6 +29,7 @@ import (
 	inferencepb "github.com/speechmux/proto/gen/go/inference/v1"
 	vadpb "github.com/speechmux/proto/gen/go/vad/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // ── pipeline builder ──────────────────────────────────────────────────────────
@@ -155,11 +156,11 @@ type pipelineVADServer struct {
 	vadpb.UnimplementedVADPluginServer
 }
 
-func (s *pipelineVADServer) HealthCheck(_ context.Context, _ *vadpb.Empty) (*commonpb.PluginHealthStatus, error) {
+func (s *pipelineVADServer) HealthCheck(_ context.Context, _ *emptypb.Empty) (*commonpb.PluginHealthStatus, error) {
 	return &commonpb.PluginHealthStatus{State: commonpb.PluginState_PLUGIN_STATE_READY}, nil
 }
 
-func (s *pipelineVADServer) GetCapabilities(_ context.Context, _ *vadpb.Empty) (*vadpb.VADCapabilities, error) {
+func (s *pipelineVADServer) GetCapabilities(_ context.Context, _ *emptypb.Empty) (*vadpb.VADCapabilities, error) {
 	return &vadpb.VADCapabilities{OptimalFrameMs: 30}, nil
 }
 
@@ -191,7 +192,7 @@ type pipelineSTTServer struct {
 	calls atomic.Int64
 }
 
-func (s *pipelineSTTServer) HealthCheck(_ context.Context, _ *inferencepb.Empty) (*commonpb.PluginHealthStatus, error) {
+func (s *pipelineSTTServer) HealthCheck(_ context.Context, _ *emptypb.Empty) (*commonpb.PluginHealthStatus, error) {
 	return &commonpb.PluginHealthStatus{State: commonpb.PluginState_PLUGIN_STATE_READY}, nil
 }
 
