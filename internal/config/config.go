@@ -70,8 +70,9 @@ type StreamConfig struct {
 	MaxBufferSec             float64 `yaml:"max_buffer_sec"`
 	BufferOverlapSec         float64 `yaml:"buffer_overlap_sec"`
 	EmitFinalOnVAD           bool    `yaml:"emit_final_on_vad"`
-	VADFrameTimeoutSec       float64 `yaml:"vad_frame_timeout_sec"`
-	EPDHeartbeatIntervalSec  float64 `yaml:"epd_heartbeat_interval_sec"`
+	VADFrameTimeoutSec          float64 `yaml:"vad_frame_timeout_sec"`
+	EPDHeartbeatIntervalSec     float64 `yaml:"epd_heartbeat_interval_sec"`
+	VADWatermarkLagThresholdSec float64 `yaml:"vad_watermark_lag_threshold_sec"`
 }
 
 // CircuitBreakerConfig holds circuit-breaker tuning for a plugin endpoint pool.
@@ -245,6 +246,9 @@ func (c *Config) Defaults() {
 	}
 	if c.Stream.VADFrameTimeoutSec == 0 {
 		c.Stream.VADFrameTimeoutSec = 3.0
+	}
+	if c.Stream.VADWatermarkLagThresholdSec == 0 {
+		c.Stream.VADWatermarkLagThresholdSec = 5.0
 	}
 }
 

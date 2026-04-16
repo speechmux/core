@@ -143,3 +143,15 @@ func (b *AudioRingBuffer) ConfirmedWatermark() uint64 {
 	defer b.mu.Unlock()
 	return b.confirmedWatermark
 }
+
+// LatestSequence returns the sequence number of the most recently appended entry.
+// Returns 0 if the buffer is empty.
+func (b *AudioRingBuffer) LatestSequence() uint64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.size == 0 {
+		return 0
+	}
+	idx := (b.head + b.size - 1) % b.maxEntries
+	return b.entries[idx].seq
+}

@@ -13,6 +13,16 @@ import (
 // The caller should close the session with ERR3004.
 var ErrVADFrameTimeout = errors.New("VAD frame timeout: silent hang detected")
 
+// ErrVADWatermarkLag is returned by EPDController.Run (terminateOnLag=true, BATCH
+// mode) when the gap between the latest buffered audio and the VAD confirmed
+// watermark exceeds watermarkLagThreshold. Indicates a slow-but-responding VAD
+// plugin. The caller should close the session with ERR3004.
+var ErrVADWatermarkLag = errors.New("VAD watermark lag: slow-but-responding VAD detected")
+
+// lagWarnCooldown is the minimum interval between consecutive onWatermarkLag calls
+// in non-terminating (REALTIME) mode.
+const lagWarnCooldown = 30 * time.Second
+
 // VADFrame carries a single VAD result echoed back from the plugin.
 type VADFrame struct {
 	SequenceNumber    uint64
@@ -26,32 +36,54 @@ type VADFrame struct {
 // Silent hang defence: if the VAD plugin stops responding for longer than
 // vadFrameTimeout, Run returns ErrVADFrameTimeout so the caller can terminate
 // the session with ERR3004.
+//
+// Watermark lag defence: if the gap between the latest buffered audio and the VAD
+// confirmed watermark exceeds watermarkLagThreshold, Run either returns
+// ErrVADWatermarkLag (terminateOnLag=true, BATCH) or invokes onWatermarkLag with
+// a cooldown (terminateOnLag=false, REALTIME).
 type EPDController struct {
-	silenceDuration   time.Duration
-	vadFrameTimeout   time.Duration
-	rmsThreshold      float64
-	heartbeatInterval time.Duration // 0 = disabled
+	silenceDuration       time.Duration
+	vadFrameTimeout       time.Duration
+	rmsThreshold          float64
+	heartbeatInterval     time.Duration // 0 = disabled
+	watermarkLagThreshold time.Duration // 0 = disabled
+	lagFrameDurationMs    float64       // milliseconds per sequence number unit
+	terminateOnLag        bool          // true: return error (BATCH); false: warn only (REALTIME)
 
 	// onSpeechStart is called with the ring-buffer sequence number of the first
 	// speech frame in a new utterance. May be nil.
 	onSpeechStart func(startSeq uint64)
 	// onSpeechEnd is called immediately after onUtteranceEnd fires. May be nil.
 	onSpeechEnd func()
+	// onWatermarkLag is called when the watermark lag exceeds the threshold.
+	// lagSec is the measured lag in seconds. May be nil.
+	onWatermarkLag func(lagSec float64)
 }
 
-// NewEPDController returns an EPDController with the given silence duration,
-// RMS threshold, VAD-frame timeout, and heartbeat log interval.
+// NewEPDController returns an EPDController with the given configuration.
 // A zero vadFrameTimeoutSec falls back to 3 s.
 // A zero heartbeatIntervalSec disables the periodic heartbeat log.
-func NewEPDController(silenceSec, rmsThreshold, vadFrameTimeoutSec, heartbeatIntervalSec float64) *EPDController {
+// A zero watermarkLagThresholdSec disables watermark lag detection.
+// lagFrameDurationMs is the duration of one sequence unit in milliseconds
+// (matches the VAD plugin's optimal_frame_ms; typically 30).
+// terminateOnLag=true returns ErrVADWatermarkLag on threshold breach (BATCH);
+// false logs a warning via onWatermarkLag with a 30 s cooldown (REALTIME).
+func NewEPDController(
+	silenceSec, rmsThreshold, vadFrameTimeoutSec, heartbeatIntervalSec,
+	watermarkLagThresholdSec, lagFrameDurationMs float64,
+	terminateOnLag bool,
+) *EPDController {
 	if vadFrameTimeoutSec == 0 {
 		vadFrameTimeoutSec = 3.0
 	}
 	return &EPDController{
-		silenceDuration:   time.Duration(silenceSec * float64(time.Second)),
-		vadFrameTimeout:   time.Duration(vadFrameTimeoutSec * float64(time.Second)),
-		rmsThreshold:      rmsThreshold,
-		heartbeatInterval: time.Duration(heartbeatIntervalSec * float64(time.Second)),
+		silenceDuration:       time.Duration(silenceSec * float64(time.Second)),
+		vadFrameTimeout:       time.Duration(vadFrameTimeoutSec * float64(time.Second)),
+		rmsThreshold:          rmsThreshold,
+		heartbeatInterval:     time.Duration(heartbeatIntervalSec * float64(time.Second)),
+		watermarkLagThreshold: time.Duration(watermarkLagThresholdSec * float64(time.Second)),
+		lagFrameDurationMs:    lagFrameDurationMs,
+		terminateOnLag:        terminateOnLag,
 	}
 }
 
@@ -67,10 +99,18 @@ func (e *EPDController) SetSpeechEndCallback(fn func()) {
 	e.onSpeechEnd = fn
 }
 
+// SetWatermarkLagCallback registers a function called when the VAD watermark lag
+// exceeds the configured threshold. lagSec is the measured lag in seconds.
+// In non-termination mode (REALTIME), the callback is invoked at most once per
+// lagWarnCooldown (30 s) to suppress log spam.
+func (e *EPDController) SetWatermarkLagCallback(fn func(lagSec float64)) {
+	e.onWatermarkLag = fn
+}
+
 // Run processes VAD frames and calls onUtteranceEnd with the concatenated
 // speech audio when silence_duration elapses after an active speech segment.
-// It blocks until ctx is cancelled, vadResultCh is closed, or
-// ErrVADFrameTimeout fires.
+// It blocks until ctx is cancelled, vadResultCh is closed,
+// ErrVADFrameTimeout fires, or (in BATCH mode) ErrVADWatermarkLag fires.
 func (e *EPDController) Run(
 	ctx context.Context,
 	vadResultCh <-chan VADFrame,
@@ -97,6 +137,7 @@ func (e *EPDController) Run(
 	var lastSeq uint64
 	var frameCount uint64
 	var epdCount int
+	var lastLagWarn time.Time // last time onWatermarkLag was invoked (REALTIME debounce)
 
 	stopTimer := func(t *time.Timer) {
 		if !t.Stop() {
@@ -129,6 +170,27 @@ func (e *EPDController) Run(
 			buf.AdvanceWatermark(vad.SequenceNumber)
 			lastSeq = vad.SequenceNumber
 			frameCount++
+
+			// Watermark lag check: detect slow-but-responding VAD.
+			if e.watermarkLagThreshold > 0 && e.lagFrameDurationMs > 0 {
+				if latestSeq := buf.LatestSequence(); latestSeq > vad.SequenceNumber {
+					lagSeqs := latestSeq - vad.SequenceNumber
+					lagDur := time.Duration(float64(lagSeqs) * e.lagFrameDurationMs * float64(time.Millisecond))
+					if lagDur > e.watermarkLagThreshold {
+						if e.terminateOnLag {
+							if e.onWatermarkLag != nil {
+								e.onWatermarkLag(lagDur.Seconds())
+							}
+							return fmt.Errorf("%w (lag=%v, threshold=%v)", ErrVADWatermarkLag, lagDur.Round(time.Millisecond), e.watermarkLagThreshold)
+						}
+						// REALTIME: warn at most once per lagWarnCooldown.
+						if e.onWatermarkLag != nil && (lastLagWarn.IsZero() || time.Since(lastLagWarn) >= lagWarnCooldown) {
+							e.onWatermarkLag(lagDur.Seconds())
+							lastLagWarn = time.Now()
+						}
+					}
+				}
+			}
 
 			// Per-frame detail is DEBUG-only; use the heartbeat ticker for
 			// periodic INFO-level activity confirmation.

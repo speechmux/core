@@ -132,7 +132,18 @@ func (p *StreamProcessor) ProcessSession(ctx context.Context, sess *session.Sess
 	g.Go(func() error {
 		defer close(decodeQueueCh)
 		defer close(speechEndCh)
-		epd := NewEPDController(sess.Info.VADSilence, cfg.Stream.SpeechRMSThreshold, cfg.Stream.VADFrameTimeoutSec, cfg.Stream.EPDHeartbeatIntervalSec)
+		// Each sequence number = one VAD frame = optFrameMs milliseconds.
+		optFrameMs := 30 // matches vadSendLoop default
+		realtime := sess.Info.StreamMode == clientpb.StreamMode_STREAM_MODE_REALTIME
+		epd := NewEPDController(
+			sess.Info.VADSilence,
+			cfg.Stream.SpeechRMSThreshold,
+			cfg.Stream.VADFrameTimeoutSec,
+			cfg.Stream.EPDHeartbeatIntervalSec,
+			cfg.Stream.VADWatermarkLagThresholdSec,
+			float64(optFrameMs),
+			!realtime, // terminateOnLag: true for BATCH, false for REALTIME
+		)
 		epd.SetSpeechStartCallback(func(startSeq uint64) {
 			p.obs.RecordVADTrigger()
 			select {
@@ -146,8 +157,15 @@ func (p *StreamProcessor) ProcessSession(ctx context.Context, sess *session.Sess
 			default:
 			}
 		})
-		// Each sequence number = one VAD frame = optFrameMs milliseconds.
-		optFrameMs := 30 // matches vadSendLoop default
+		epd.SetWatermarkLagCallback(func(lagSec float64) {
+			slog.Warn("VAD watermark lag exceeded threshold",
+				"session_id", sess.ID,
+				"lag_sec", lagSec,
+				"threshold_sec", cfg.Stream.VADWatermarkLagThresholdSec,
+				"realtime", realtime,
+			)
+			p.obs.RecordVADWatermarkLag()
+		})
 		seqToSec := func(seq uint64) float64 {
 			return float64(seq) * float64(optFrameMs) / 1000.0
 		}
@@ -197,7 +215,7 @@ func (p *StreamProcessor) ProcessSession(ctx context.Context, sess *session.Sess
 		if isNormalShutdown(err) {
 			return nil
 		}
-		if errors.Is(err, ErrVADFrameTimeout) {
+		if errors.Is(err, ErrVADFrameTimeout) || errors.Is(err, ErrVADWatermarkLag) {
 			return sttErrors.New(sttErrors.ErrVADStreamConnectFailed, err.Error()).ToGRPC()
 		}
 		return fmt.Errorf("stream processor: %w", err)

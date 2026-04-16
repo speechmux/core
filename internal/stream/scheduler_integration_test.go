@@ -31,7 +31,8 @@ type spyMetrics struct {
 
 func (s *spyMetrics) IncActiveSessions()  {}
 func (s *spyMetrics) DecActiveSessions()  {}
-func (s *spyMetrics) RecordVADTrigger()   {}
+func (s *spyMetrics) RecordVADTrigger()       {}
+func (s *spyMetrics) RecordVADWatermarkLag() {}
 func (s *spyMetrics) RecordDecodeLatency(_ float64, _ bool, engineName string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -24,6 +24,8 @@ type MetricsObserver interface {
 
 	// EPD / VAD.
 	RecordVADTrigger()
+	// RecordVADWatermarkLag records a watermark lag threshold-exceeded event.
+	RecordVADWatermarkLag()
 }
 
 // ── Prometheus implementation ─────────────────────────────────────────────────
@@ -35,7 +37,8 @@ type PrometheusMetrics struct {
 	sessionsTotal  prometheus.Counter
 	decodeLatency  *prometheus.HistogramVec
 	decodeTotal    *prometheus.CounterVec
-	vadTriggers    prometheus.Counter
+	vadTriggers        prometheus.Counter
+	vadWatermarkLagTotal prometheus.Counter
 }
 
 // NewPrometheusMetrics creates and registers all SpeechMux metrics.
@@ -65,6 +68,10 @@ func NewPrometheusMetrics() *PrometheusMetrics {
 			Name: "speechmux_vad_triggers_total",
 			Help: "Total number of EPD speech-start events (utterance starts).",
 		}),
+		vadWatermarkLagTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "speechmux_vad_watermark_lag_total",
+			Help: "Total number of times the VAD watermark lag threshold was exceeded.",
+		}),
 	}
 
 	reg.MustRegister(
@@ -73,6 +80,7 @@ func NewPrometheusMetrics() *PrometheusMetrics {
 		m.decodeLatency,
 		m.decodeTotal,
 		m.vadTriggers,
+		m.vadWatermarkLagTotal,
 		// Standard Go runtime metrics.
 		prometheus.NewGoCollector(),
 		prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}),
@@ -100,7 +108,8 @@ func (m *PrometheusMetrics) RecordDecodeResult(isFinal bool, ok bool, engineName
 	m.decodeTotal.WithLabelValues(t, status, engineName).Inc()
 }
 
-func (m *PrometheusMetrics) RecordVADTrigger() { m.vadTriggers.Inc() }
+func (m *PrometheusMetrics) RecordVADTrigger()       { m.vadTriggers.Inc() }
+func (m *PrometheusMetrics) RecordVADWatermarkLag() { m.vadWatermarkLagTotal.Inc() }
 
 // TextHandler returns an http.Handler that serves /metrics in Prometheus text format.
 func (m *PrometheusMetrics) TextHandler() http.Handler {
@@ -156,4 +165,5 @@ func (NopMetrics) IncActiveSessions()                       {}
 func (NopMetrics) DecActiveSessions()                       {}
 func (NopMetrics) RecordDecodeLatency(_ float64, _ bool, _ string) {}
 func (NopMetrics) RecordDecodeResult(_ bool, _ bool, _ string)     {}
-func (NopMetrics) RecordVADTrigger()                        {}
+func (NopMetrics) RecordVADTrigger()       {}
+func (NopMetrics) RecordVADWatermarkLag() {}

@@ -163,3 +163,28 @@ func TestAudioRingBuffer_WrapAround(t *testing.T) {
 		t.Fatalf("wrap-around extract = %q, want %q", got, "2345")
 	}
 }
+
+func TestAudioRingBuffer_LatestSequence(t *testing.T) {
+	buf := NewAudioRingBuffer(10)
+
+	if got := buf.LatestSequence(); got != 0 {
+		t.Fatalf("empty buffer: LatestSequence = %d, want 0", got)
+	}
+
+	buf.Append(1, []byte("a"))
+	if got := buf.LatestSequence(); got != 1 {
+		t.Fatalf("LatestSequence = %d, want 1", got)
+	}
+
+	buf.Append(5, []byte("b"))
+	buf.Append(9, []byte("c"))
+	if got := buf.LatestSequence(); got != 9 {
+		t.Fatalf("LatestSequence = %d, want 9", got)
+	}
+
+	// After DropOldest the latest should still be 9.
+	buf.DropOldest()
+	if got := buf.LatestSequence(); got != 9 {
+		t.Fatalf("after DropOldest: LatestSequence = %d, want 9", got)
+	}
+}

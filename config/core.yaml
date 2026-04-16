@@ -32,6 +32,10 @@ stream:
                                     # aborted with ERR2003. Increase on high-latency plugin connections.
   epd_heartbeat_interval_sec: 30    # Interval (seconds) between EPD heartbeat log lines when no speech
                                     # is detected. Set to 0 to disable. Per-frame logs are DEBUG only.
+  vad_watermark_lag_threshold_sec: 5.0  # Seconds of lag between the latest buffered audio and the VAD
+                                        # confirmed watermark before action is taken. BATCH: terminates
+                                        # the session with ERR3004. REALTIME: logs a warning and records
+                                        # a metric, but does not terminate. Set to 0 to disable.
 
 codec:
   target_sample_rate: 16000  # Target PCM sample rate (Hz). Incoming audio is resampled to this.

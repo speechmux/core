@@ -144,6 +144,122 @@ func TestEPDController_ClosedChannelExitsClean(t *testing.T) {
 	}
 }
 
+func TestEPDController_WatermarkLagTerminates(t *testing.T) {
+	buf := NewAudioRingBuffer(10)
+	// Append 20 frames so latest seq = 20.
+	for i := 1; i <= 20; i++ {
+		buf.Append(uint64(i), []byte("x"))
+	}
+
+	vadCh := make(chan VADFrame, 4)
+	lagCh := make(chan float64, 1)
+
+	// BATCH mode: terminateOnLag=true, threshold=50ms at 30ms/frame → 2 frames of lag triggers.
+	epd := &EPDController{
+		silenceDuration:       100 * time.Millisecond,
+		vadFrameTimeout:       3 * time.Second,
+		watermarkLagThreshold: 50 * time.Millisecond,
+		lagFrameDurationMs:    30,
+		terminateOnLag:        true,
+		onWatermarkLag: func(lagSec float64) {
+			select {
+			case lagCh <- lagSec:
+			default:
+			}
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// VAD confirms only seq=1; buf has seq up to 20 → lag = 19 frames * 30ms = 570ms > 50ms.
+	sendVAD(vadCh, 1, false, 0.1)
+
+	err := epd.Run(ctx, vadCh, buf, func(_ []byte, _, _ uint64) {})
+	if !errors.Is(err, ErrVADWatermarkLag) {
+		t.Fatalf("Run returned %v, want ErrVADWatermarkLag", err)
+	}
+	select {
+	case <-lagCh:
+		// callback was called before termination
+	default:
+		t.Fatal("onWatermarkLag not called before termination")
+	}
+}
+
+func TestEPDController_WatermarkLagWarnsOnly(t *testing.T) {
+	buf := NewAudioRingBuffer(10)
+	for i := 1; i <= 20; i++ {
+		buf.Append(uint64(i), []byte("x"))
+	}
+
+	vadCh := make(chan VADFrame, 4)
+	lagCh := make(chan float64, 1)
+
+	// REALTIME mode: terminateOnLag=false — must not return error, only warn.
+	epd := &EPDController{
+		silenceDuration:       100 * time.Millisecond,
+		vadFrameTimeout:       3 * time.Second,
+		watermarkLagThreshold: 50 * time.Millisecond,
+		lagFrameDurationMs:    30,
+		terminateOnLag:        false,
+		onWatermarkLag: func(lagSec float64) {
+			select {
+			case lagCh <- lagSec:
+			default:
+			}
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		done <- epd.Run(ctx, vadCh, buf, func(_ []byte, _, _ uint64) {})
+	}()
+
+	sendVAD(vadCh, 1, false, 0.1)
+
+	select {
+	case <-lagCh:
+		// callback was called — good
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("onWatermarkLag not called despite lag exceeding threshold")
+	}
+
+	cancel()
+	if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("REALTIME mode must not return ErrVADWatermarkLag, got: %v", err)
+	}
+}
+
+func TestEPDController_WatermarkLagDisabled(t *testing.T) {
+	buf := NewAudioRingBuffer(10)
+	for i := 1; i <= 20; i++ {
+		buf.Append(uint64(i), []byte("x"))
+	}
+
+	vadCh := make(chan VADFrame, 4)
+
+	// threshold=0 disables lag detection even with terminateOnLag=true.
+	epd := &EPDController{
+		silenceDuration:       100 * time.Millisecond,
+		vadFrameTimeout:       3 * time.Second,
+		watermarkLagThreshold: 0,
+		terminateOnLag:        true,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	go func() { sendVAD(vadCh, 1, false, 0.1) }()
+
+	err := epd.Run(ctx, vadCh, buf, func(_ []byte, _, _ uint64) {})
+	if errors.Is(err, ErrVADWatermarkLag) {
+		t.Fatal("watermark lag error returned despite threshold=0 (disabled)")
+	}
+}
+
 func TestEPDController_NoUtteranceWhenNeverSpeech(t *testing.T) {
 	buf := NewAudioRingBuffer(10)
 	buf.Append(1, []byte("audio"))
