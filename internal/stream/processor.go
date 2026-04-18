@@ -9,43 +9,31 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
 
+	"github.com/speechmux/core/internal/config"
 	sttErrors "github.com/speechmux/core/internal/errors"
 	"github.com/speechmux/core/internal/metrics"
 	"github.com/speechmux/core/internal/plugin"
 	"github.com/speechmux/core/internal/session"
-	"github.com/speechmux/core/internal/config"
 	clientpb "github.com/speechmux/proto/gen/go/client/v1"
-	inferencepb "github.com/speechmux/proto/gen/go/inference/v1"
 )
-
-// decodeTask is an audio segment queued for inference.
-type decodeTask struct {
-	audio     []byte
-	isFinal   bool
-	isPartial bool
-	// Session-relative timestamps derived from ring-buffer sequence numbers.
-	startSec float64
-	endSec   float64
-}
 
 // StreamProcessor orchestrates the per-session audio pipeline:
 //
 //	AudioInCh → frameAggregator → VAD plugin (vadSendLoop)
 //	AudioInCh → AudioRingBuffer
 //	VAD plugin responses → vadResultCh (vadRecvLoop)
-//	vadResultCh → EPDController → decodeQueueCh (epdLoop)
-//	partialDecodeTimerLoop → decodeQueueCh (adaptive intervals during speech)
-//	decodeQueueCh → decodeWorkerLoop → sess.ResultCh
+//	vadResultCh → EPDController → engine (epdLoop)
+//	engine.Results() → sess.ResultCh (forwarder goroutine)
 type StreamProcessor struct {
 	cfg          *atomic.Pointer[config.Config]
 	vadEndpoints []*plugin.Endpoint
-	vadRR        atomic.Uint64 // round-robin counter for VAD endpoint selection
+	vadRR        atomic.Uint64    // round-robin counter for VAD endpoint selection
 	scheduler    *DecodeScheduler // nil when no inference endpoints are configured
 	obs          metrics.MetricsObserver
 }
@@ -79,8 +67,6 @@ func (p *StreamProcessor) selectVADEndpoint() *plugin.Endpoint {
 // ProcessSession runs the full audio pipeline for a session until ctx is
 // cancelled or a fatal error occurs.
 func (p *StreamProcessor) ProcessSession(ctx context.Context, sess *session.Session) error {
-	// Root span for the entire session pipeline. All stt.decode child spans are
-	// parented here via context propagation through the errgroup ctx.
 	ctx, span := otel.Tracer("speechmux/core/stream").Start(ctx, "session.pipeline")
 	span.SetAttributes(
 		attribute.String("session.id", sess.ID),
@@ -104,37 +90,51 @@ func (p *StreamProcessor) ProcessSession(ctx context.Context, sess *session.Sess
 
 	buf := NewAudioRingBuffer(cfg.Stream.MaxBufferSec)
 	vadResultCh := make(chan VADFrame, 64)
-	decodeQueueCh := make(chan decodeTask, 4)
-	speechStartCh := make(chan uint64, 1)
-	speechEndCh := make(chan struct{}, 1)
+
+	// Engine construction. Phase A introduces only batchDecodeEngine.
+	realtime := sess.Info.StreamMode == clientpb.StreamMode_STREAM_MODE_REALTIME
+	engine := newBatchDecodeEngine(p.scheduler, buf)
+	engineCfg := SessionDecodeConfig{
+		SampleRate:   sampleRate,
+		LanguageCode: sess.Info.Language,
+		Realtime:     realtime,
+		Stream:       cfg.Stream,
+	}
+	if err := engine.Start(ctx, sess, engineCfg); err != nil {
+		return fmt.Errorf("engine start: %w", err)
+	}
 
 	g, gCtx := errgroup.WithContext(ctx)
 
-	// Close ResultCh and signal processing-done once all pipeline goroutines exit.
-	// This runs after g.Wait() completes because defers fire at function return.
+	// Close order: engine.Close is deferred BEFORE the ResultCh close so that
+	// the engine fully drains and closes Results() before the forwarder exits.
+	// The forwarder is in the errgroup, so g.Wait() returns only after the
+	// forwarder has seen Results() close. After g.Wait(), engine.Close runs
+	// (idempotent; already closed on the normal path).
 	defer func() {
+		_ = engine.Close()
 		close(sess.ResultCh)
 		sess.MarkProcessingDone()
 	}()
 
-	// Goroutine 1: receive audio, buffer it, aggregate and forward to VAD.
+	// Goroutine 1: VAD send loop. Unchanged.
 	g.Go(func() error {
 		return p.vadSendLoop(gCtx, sess, buf, vadClient, cfg, sampleRate)
 	})
 
-	// Goroutine 2: receive VAD responses and forward to EPD controller.
+	// Goroutine 2: VAD recv loop. Unchanged.
 	g.Go(func() error {
 		defer close(vadResultCh)
 		return p.vadRecvLoop(gCtx, vadClient, vadResultCh)
 	})
 
-	// Goroutine 3: EPD — silence detection and utterance extraction.
+	// Goroutine 3: EPD controller. Callbacks now call engine methods directly
+	// instead of writing to channels. Defers engine.Close() so that on any
+	// exit (clean or error) the results channel is closed, which unblocks
+	// the forwarder goroutine and allows g.Wait() to return.
 	g.Go(func() error {
-		defer close(decodeQueueCh)
-		defer close(speechEndCh)
-		// Each sequence number = one VAD frame = optFrameMs milliseconds.
+		defer func() { _ = engine.Close() }()
 		optFrameMs := 30 // matches vadSendLoop default
-		realtime := sess.Info.StreamMode == clientpb.StreamMode_STREAM_MODE_REALTIME
 		epd := NewEPDController(
 			sess.Info.VADSilence,
 			cfg.Stream.SpeechRMSThreshold,
@@ -146,16 +146,10 @@ func (p *StreamProcessor) ProcessSession(ctx context.Context, sess *session.Sess
 		)
 		epd.SetSpeechStartCallback(func(startSeq uint64) {
 			p.obs.RecordVADTrigger()
-			select {
-			case speechStartCh <- startSeq:
-			default: // overwrite with newer seq; previous partial timer will pick it up
-			}
+			engine.OnSpeechStart(startSeq)
 		})
 		epd.SetSpeechEndCallback(func() {
-			select {
-			case speechEndCh <- struct{}{}:
-			default:
-			}
+			engine.OnSpeechEnd()
 		})
 		epd.SetWatermarkLagCallback(func(lagSec float64) {
 			slog.Warn("VAD watermark lag exceeded threshold",
@@ -166,36 +160,50 @@ func (p *StreamProcessor) ProcessSession(ctx context.Context, sess *session.Sess
 			)
 			p.obs.RecordVADWatermarkLag()
 		})
-		seqToSec := func(seq uint64) float64 {
-			return float64(seq) * float64(optFrameMs) / 1000.0
-		}
 		return epd.Run(gCtx, vadResultCh, buf, func(audio []byte, startSeq, endSeq uint64) {
-			// Submit final decode (non-blocking enqueue; context guards the select).
-			select {
-			case decodeQueueCh <- decodeTask{
-				audio:    audio,
-				isFinal:  true,
-				startSec: seqToSec(startSeq),
-				endSec:   seqToSec(endSeq),
-			}:
-			case <-gCtx.Done():
+			// EPD guarantees its own goroutine serialization. Ignore errors
+			// from OnUtteranceEnd other than ctx cancellation (the engine
+			// already logs failures internally).
+			if err := engine.OnUtteranceEnd(startSeq, endSeq); err != nil {
+				if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+					slog.Warn("engine OnUtteranceEnd failed",
+						"session_id", sess.ID, "error", err)
+				}
 			}
 		})
 	})
 
-	// Goroutine 4: adaptive partial decode timer (fires during speech).
+	// Goroutine 4: results forwarder — engine.Results() → sess.ResultCh.
+	// Replaces the old goroutine-5 direct write from decodeWorkerLoop.
 	g.Go(func() error {
-		return p.partialDecodeTimerLoop(gCtx, buf, speechStartCh, speechEndCh, decodeQueueCh, cfg, int(sampleRate))
+		for {
+			select {
+			case res, ok := <-engine.Results():
+				if !ok {
+					return nil
+				}
+				out := &clientpb.RecognitionResult{
+					IsFinal:       res.IsFinal,
+					Text:          res.Text,
+					CommittedText: res.CommittedText,
+					UnstableText:  res.UnstableText,
+					AudioDuration: res.AudioDuration,
+					LanguageCode:  res.LanguageCode,
+					StartSec:      res.StartSec,
+					EndSec:        res.EndSec,
+				}
+				select {
+				case sess.ResultCh <- out:
+				case <-gCtx.Done():
+					return gCtx.Err()
+				}
+			case <-gCtx.Done():
+				return gCtx.Err()
+			}
+		}
 	})
 
-	// Goroutine 5: decode worker — runs inference and sends results to client.
-	g.Go(func() error {
-		return p.decodeWorkerLoop(gCtx, sess, decodeQueueCh, sampleRate, cfg)
-	})
-
-	// Goroutine 6: periodic Trim of confirmed, aged-out ring buffer entries.
-	// Runs outside the errgroup so that it does not block g.Wait() after the
-	// pipeline chain (goroutines 1–5) has terminated naturally.
+	// Trim ticker (formerly goroutine 6). Unchanged.
 	trimCtx, cancelTrim := context.WithCancel(ctx)
 	defer cancelTrim()
 	go func() {
@@ -219,211 +227,6 @@ func (p *StreamProcessor) ProcessSession(ctx context.Context, sess *session.Sess
 			return sttErrors.New(sttErrors.ErrVADStreamConnectFailed, err.Error()).ToGRPC()
 		}
 		return fmt.Errorf("stream processor: %w", err)
-	}
-	return nil
-}
-
-// partialDecodeTimerLoop fires partial decode requests at adaptive intervals
-// while speech is active. It enqueues audio into decodeQueueCh without blocking
-// (drops if queue is full, which is correct for partials).
-//
-// Adaptive interval (design doc §10.12):
-//
-//	audio < 5 s  → partial_decode_interval_sec (default 1.5 s)
-//	audio 5–10 s → 3 s
-//	audio > 10 s → 5 s
-func (p *StreamProcessor) partialDecodeTimerLoop(
-	ctx context.Context,
-	buf *AudioRingBuffer,
-	speechStartCh <-chan uint64,
-	speechEndCh <-chan struct{},
-	decodeQueueCh chan<- decodeTask,
-	cfg *config.Config,
-	sampleRate int,
-) error {
-	var speechStartSeq uint64
-	var inSpeech bool
-	var partialTimer *time.Timer
-	var partialTimerC <-chan time.Time // nil channel when no timer
-
-	stopT := func() {
-		if partialTimer != nil {
-			if !partialTimer.Stop() {
-				select {
-				case <-partialTimer.C:
-				default:
-				}
-			}
-			partialTimer = nil
-			partialTimerC = nil
-		}
-	}
-
-	initialInterval := func() time.Duration {
-		d := cfg.Stream.PartialDecodeIntervalSec
-		if d <= 0 {
-			d = 1.5
-		}
-		return time.Duration(d * float64(time.Second))
-	}
-
-	adaptiveInterval := func(audioDurSec float64) time.Duration {
-		switch {
-		case audioDurSec < 5:
-			return initialInterval()
-		case audioDurSec < 10:
-			return 3 * time.Second
-		default:
-			return 5 * time.Second
-		}
-	}
-
-	for {
-		select {
-		case startSeq, ok := <-speechStartCh:
-			if !ok {
-				return nil
-			}
-			speechStartSeq = startSeq
-			inSpeech = true
-			stopT()
-			partialTimer = time.NewTimer(initialInterval())
-			partialTimerC = partialTimer.C
-
-		case _, ok := <-speechEndCh:
-			if !ok {
-				return nil
-			}
-			inSpeech = false
-			stopT()
-
-		case <-partialTimerC:
-			if !inSpeech {
-				partialTimerC = nil
-				break
-			}
-			curSeq := buf.ConfirmedWatermark()
-			audio := buf.ExtractRange(speechStartSeq, curSeq)
-
-			// Cap audio to max_partial_audio_sec (design doc §10.12).
-			maxPartialSec := cfg.Stream.PartialDecodeWindowSec
-			if maxPartialSec <= 0 {
-				maxPartialSec = 10
-			}
-			maxBytes := int(maxPartialSec*float64(sampleRate)) * 2 // S16LE
-			if maxBytes > 0 && len(audio) > maxBytes {
-				audio = audio[len(audio)-maxBytes:]
-			}
-
-			if len(audio) > 0 {
-				// Each sequence = one VAD frame = 30ms.
-				seqToSec := func(seq uint64) float64 {
-					return float64(seq) * 30.0 / 1000.0
-				}
-				select {
-				case decodeQueueCh <- decodeTask{
-					audio:    audio,
-					isFinal:  false,
-					isPartial: true,
-					startSec: seqToSec(speechStartSeq),
-					endSec:   seqToSec(curSeq),
-				}:
-				default:
-					// Drop partial if queue is full — correct behaviour.
-				}
-			}
-
-			audioDurSec := float64(len(audio)/2) / float64(sampleRate)
-			partialTimer = time.NewTimer(adaptiveInterval(audioDurSec))
-			partialTimerC = partialTimer.C
-
-		case <-ctx.Done():
-			stopT()
-			return ctx.Err()
-		}
-	}
-}
-
-// decodeWorkerLoop reads decode tasks from decodeQueueCh, calls the inference
-// plugin via DecodeScheduler, updates the ResultAssembler, and writes
-// RecognitionResult messages to sess.ResultCh.
-//
-// The assembler is owned exclusively by this goroutine; no mutex is needed.
-func (p *StreamProcessor) decodeWorkerLoop(
-	ctx context.Context,
-	sess *session.Session,
-	decodeQueueCh <-chan decodeTask,
-	sampleRate int32,
-	cfg *config.Config,
-) error {
-	if p.scheduler == nil {
-		// No inference endpoints configured — drain the queue and log.
-		for range decodeQueueCh {
-			slog.Debug("decode worker: no scheduler, dropping task", "session_id", sess.ID)
-		}
-		return nil
-	}
-
-	assembler := NewResultAssembler()
-	var reqSeq uint64
-
-	for task := range decodeQueueCh {
-		reqSeq++
-		reqID := fmt.Sprintf("%s-r%d", sess.ID, reqSeq)
-
-		resp, err := p.scheduler.Submit(
-			ctx,
-			sess.ID,
-			reqID,
-			task.audio,
-			sampleRate,
-			sess.Info.Language,
-			inferencepb.Task_TASK_TRANSCRIBE,
-			nil, // TODO: DecodeProfile → DecodeOptions in a future phase
-			task.isFinal,
-			task.isPartial,
-		)
-		if err != nil {
-			if isNormalShutdown(err) {
-				return nil
-			}
-			var sttErr *sttErrors.STTError
-			if errors.As(err, &sttErr) {
-				// ErrGlobalPendingExceeded on a partial is a normal drop — not fatal.
-				if sttErr.Code() == sttErrors.ErrGlobalPendingExceeded && !task.isFinal {
-					slog.Debug("partial decode dropped (queue full)", "session_id", sess.ID)
-					continue
-				}
-			}
-			slog.Warn("decode failed", "session_id", sess.ID, "is_final", task.isFinal, "error", err)
-			if task.isFinal {
-				// Non-fatal: reset assembler and continue processing the session.
-				assembler.Reset()
-			}
-			continue
-		}
-
-		committed, unstable := assembler.Update(resp.Text, task.isFinal)
-		if task.isFinal {
-			assembler.Reset()
-		}
-
-		result := &clientpb.RecognitionResult{
-			IsFinal:       task.isFinal,
-			Text:          resp.Text,
-			CommittedText: committed,
-			UnstableText:  unstable,
-			AudioDuration: resp.AudioDurationSec,
-			LanguageCode:  resp.LanguageCode,
-			StartSec:      task.startSec,
-			EndSec:        task.endSec,
-		}
-
-		select {
-		case sess.ResultCh <- result:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
 	}
 	return nil
 }
