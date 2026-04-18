@@ -82,7 +82,7 @@ func TestDecodeScheduler_ConcurrentLimit(t *testing.T) {
 	}
 
 	const maxPending = 2
-	scheduler := stream.NewDecodeScheduler(router, maxPending, 5.0, nil)
+	scheduler := stream.NewDecodeScheduler(router, maxPending, 0, 5.0, nil)
 
 	ctx := context.Background()
 	audio := make([]byte, 640)
@@ -160,7 +160,7 @@ func TestDecodeScheduler_PluginFailureRerouting(t *testing.T) {
 	if err := router.Add(okEP.ID(), okEP.Socket(), 0); err != nil {
 		t.Fatalf("router.Add okEP: %v", err)
 	}
-	scheduler := stream.NewDecodeScheduler(router, 0, 5.0, nil)
+	scheduler := stream.NewDecodeScheduler(router, 0, 0, 5.0, nil)
 
 	ctx := context.Background()
 	audio := make([]byte, 640)
@@ -230,7 +230,7 @@ func TestDecodeScheduler_EngineNamePassedToMetrics(t *testing.T) {
 	}
 
 	spy := &spyMetrics{}
-	scheduler := stream.NewDecodeScheduler(router, 0, 5.0, spy)
+	scheduler := stream.NewDecodeScheduler(router, 0, 0, 5.0, spy)
 
 	_, err := scheduler.Submit(context.Background(), "s", "r",
 		make([]byte, 640), 16000, "en",

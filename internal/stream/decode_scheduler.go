@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -29,22 +30,24 @@ const defaultMaxDecodeWait = 5 * time.Second
 //   - For partial decodes, Submit returns ErrGlobalPendingExceeded immediately
 //     when no slot is available (non-blocking drop semantics).
 type DecodeScheduler struct {
-	router        *plugin.PluginRouter
-	pending       chan struct{} // bounded global semaphore; nil = unlimited
-	maxDecodeWait time.Duration
-	decodeTimeout time.Duration
-	obs           metrics.MetricsObserver
+	router          *plugin.PluginRouter
+	pending         chan struct{} // batch-unary semaphore; nil = unlimited
+	streamingSlots  chan struct{} // streaming-session semaphore; nil = unlimited
+	maxDecodeWait   time.Duration
+	decodeTimeout   time.Duration
+	obs             metrics.MetricsObserver
 }
 
 // NewDecodeScheduler creates a DecodeScheduler.
 //
 //   - router: routes requests to healthy inference endpoints.
-//   - maxPending: maximum number of in-flight decode requests across all sessions.
-//     Use 0 for unlimited.
+//   - maxPending: max in-flight batch decode requests; 0 = unlimited.
+//   - maxStreaming: max concurrent streaming sessions; 0 = unlimited.
 //   - decodeTimeoutSec: per-request timeout in seconds (ERR2001 on expiry).
 func NewDecodeScheduler(
 	router *plugin.PluginRouter,
 	maxPending int,
+	maxStreaming int,
 	decodeTimeoutSec float64,
 	obs metrics.MetricsObserver,
 ) *DecodeScheduler {
@@ -55,12 +58,36 @@ func NewDecodeScheduler(
 	if maxPending > 0 {
 		pending = make(chan struct{}, maxPending)
 	}
+	var streamingSlots chan struct{}
+	if maxStreaming > 0 {
+		streamingSlots = make(chan struct{}, maxStreaming)
+	}
 	return &DecodeScheduler{
-		router:        router,
-		pending:       pending,
-		maxDecodeWait: defaultMaxDecodeWait,
-		decodeTimeout: time.Duration(decodeTimeoutSec * float64(time.Second)),
-		obs:           obs,
+		router:         router,
+		pending:        pending,
+		streamingSlots: streamingSlots,
+		maxDecodeWait:  defaultMaxDecodeWait,
+		decodeTimeout:  time.Duration(decodeTimeoutSec * float64(time.Second)),
+		obs:            obs,
+	}
+}
+
+// AcquireStreamingSlot blocks until a streaming session slot is free or ctx is
+// cancelled. Returns a release func the caller MUST invoke exactly once on
+// session end. When maxStreaming is 0 (unlimited), returns immediately.
+func (s *DecodeScheduler) AcquireStreamingSlot(ctx context.Context) (func(), error) {
+	if s.streamingSlots == nil {
+		return func() {}, nil
+	}
+	select {
+	case s.streamingSlots <- struct{}{}:
+		once := sync.Once{}
+		return func() {
+			once.Do(func() { <-s.streamingSlots })
+		}, nil
+	case <-ctx.Done():
+		return nil, sttErrors.New(sttErrors.ErrGlobalPendingExceeded,
+			"streaming session slot unavailable: "+ctx.Err().Error())
 	}
 }
 

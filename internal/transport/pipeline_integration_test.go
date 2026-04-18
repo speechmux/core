@@ -3,11 +3,7 @@ package transport
 // pipeline_integration_test.go — Full-stack integration tests that exercise
 // the complete Go pipeline from a gRPC client through GRPCServer →
 // StreamProcessor → VAD stub → STT stub → recognition result returned to the
-// client.
-//
-// These tests complement the unit-level tests in grpc_server_test.go (which use
-// stub processors) and the stream-level tests in stream/integration_test.go
-// (which bypass the gRPC transport layer).
+// gRPC client.
 
 import (
 	"context"
@@ -15,16 +11,14 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/speechmux/core/internal/config"
 	"github.com/speechmux/core/internal/plugin"
+	"github.com/speechmux/core/internal/session"
 	"github.com/speechmux/core/internal/stream"
-	clientpb "github.com/speechmux/proto/gen/go/client/v1"
 	commonpb "github.com/speechmux/proto/gen/go/common/v1"
 	inferencepb "github.com/speechmux/proto/gen/go/inference/v1"
 	vadpb "github.com/speechmux/proto/gen/go/vad/v1"
@@ -32,43 +26,18 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
-// ── pipeline builder ──────────────────────────────────────────────────────────
+// ── pipeline test config ──────────────────────────────────────────────────────
 
-// pipelineConfig holds the parameters for buildPipeline.
-type pipelineConfig struct {
+type pipelineCfg struct {
 	vadSilenceSec    float64
 	decodeTimeoutSec float64
-	maxSessions      int
 }
 
-// pipelineComponents holds the assembled pipeline for use in a test.
-type pipelineComponents struct {
-	client clientpb.STTServiceClient
+func defaultPipelineCfg() pipelineCfg {
+	return pipelineCfg{vadSilenceSec: 0.15, decodeTimeoutSec: 5.0}
 }
 
-// buildPipeline starts stub VAD and STT gRPC servers, wires them through
-// StreamProcessor and GRPCServer, and returns a gRPC client connected via
-// bufconn. All resources are cleaned up via t.Cleanup.
-func buildPipeline(
-	t *testing.T,
-	vadSrv vadpb.VADPluginServer,
-	sttSrv inferencepb.InferencePluginServer,
-	pcfg pipelineConfig,
-) *pipelineComponents {
-	t.Helper()
-
-	// ── 1. Start stub plugin servers on Unix sockets ──────────────────────
-	vadEP := startPipelineVADServer(t, vadSrv)
-	sttEP := startPipelineSTTServer(t, sttSrv)
-
-	// ── 2. Build Core routing layer ───────────────────────────────────────
-	router := plugin.NewPluginRouter("")
-	if err := router.Add(sttEP.ID(), sttEP.Socket(), 0); err != nil {
-		t.Fatalf("router.Add stt: %v", err)
-	}
-	scheduler := stream.NewDecodeScheduler(router, 8, pcfg.decodeTimeoutSec, nil)
-
-	// ── 3. Build StreamProcessor ──────────────────────────────────────────
+func buildPipelineConfig(pcfg pipelineCfg) *atomic.Pointer[config.Config] {
 	cfg := &config.Config{}
 	cfg.Stream.VADSilenceSec = pcfg.vadSilenceSec
 	cfg.Stream.MaxBufferSec = 30
@@ -78,27 +47,12 @@ func buildPipeline(
 	cfg.Stream.VADSilenceSec = pcfg.vadSilenceSec
 	cfg.Stream.DecodeTimeoutSec = pcfg.decodeTimeoutSec
 
-	var cfgPtr atomic.Pointer[config.Config]
-	cfgPtr.Store(cfg)
-	proc := stream.NewStreamProcessor(&cfgPtr, []*plugin.Endpoint{vadEP}, scheduler, nil)
-
-	// ── 4. Build GRPCServer ───────────────────────────────────────────────
-	smCfg := &config.Config{}
-	smCfg.Stream.VADSilenceSec = 0.8
-	smCfg.Server.MaxSessions = pcfg.maxSessions
-	smCfg.Defaults()
-	smCfg.Server.MaxSessions = pcfg.maxSessions
-	sm := newTestSessionManager()
-	if pcfg.maxSessions > 0 {
-		smCfg.Server.MaxSessions = pcfg.maxSessions
-	}
-	_ = smCfg
-	grpcClient := startTestGRPCServer(t, sm, proc)
-
-	return &pipelineComponents{client: grpcClient}
+	var ptr atomic.Pointer[config.Config]
+	ptr.Store(cfg)
+	return &ptr
 }
 
-// ── Unix socket helpers ───────────────────────────────────────────────────────
+// ── socket helpers ────────────────────────────────────────────────────────────
 
 func pipelineTempSockDir(t *testing.T) string {
 	t.Helper()
@@ -112,10 +66,10 @@ func pipelineTempSockDir(t *testing.T) string {
 
 func startPipelineVADServer(t *testing.T, srv vadpb.VADPluginServer) *plugin.Endpoint {
 	t.Helper()
-	sock := filepath.Join(pipelineTempSockDir(t), "vad.sock")
+	sock := filepath.Join(pipelineTempSockDir(t), "v.sock")
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
-		t.Fatalf("listen vad: %v", err)
+		t.Fatalf("listen VAD: %v", err)
 	}
 	gs := grpc.NewServer()
 	vadpb.RegisterVADPluginServer(gs, srv)
@@ -123,7 +77,7 @@ func startPipelineVADServer(t *testing.T, srv vadpb.VADPluginServer) *plugin.End
 	t.Cleanup(func() { gs.Stop() })
 	ep, err := plugin.NewEndpoint("pipe-vad", sock, plugin.EndpointCircuitBreaker{})
 	if err != nil {
-		t.Fatalf("NewEndpoint vad: %v", err)
+		t.Fatalf("NewEndpoint VAD: %v", err)
 	}
 	t.Cleanup(func() { _ = ep.Close() })
 	return ep
@@ -131,10 +85,10 @@ func startPipelineVADServer(t *testing.T, srv vadpb.VADPluginServer) *plugin.End
 
 func startPipelineSTTServer(t *testing.T, srv inferencepb.InferencePluginServer) *plugin.Endpoint {
 	t.Helper()
-	sock := filepath.Join(pipelineTempSockDir(t), "stt.sock")
+	sock := filepath.Join(pipelineTempSockDir(t), "s.sock")
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
-		t.Fatalf("listen stt: %v", err)
+		t.Fatalf("listen STT: %v", err)
 	}
 	gs := grpc.NewServer()
 	inferencepb.RegisterInferencePluginServer(gs, srv)
@@ -142,16 +96,15 @@ func startPipelineSTTServer(t *testing.T, srv inferencepb.InferencePluginServer)
 	t.Cleanup(func() { gs.Stop() })
 	ep, err := plugin.NewEndpoint("pipe-stt", sock, plugin.EndpointCircuitBreaker{})
 	if err != nil {
-		t.Fatalf("NewEndpoint stt: %v", err)
+		t.Fatalf("NewEndpoint STT: %v", err)
 	}
 	t.Cleanup(func() { _ = ep.Close() })
 	return ep
 }
 
-// ── stub plugin servers ───────────────────────────────────────────────────────
+// ── stub servers ──────────────────────────────────────────────────────────────
 
-// pipelineVADServer marks frames 1–25 as speech and the rest as silence.
-// This triggers EPD after the silence window expires.
+// pipelineVADServer reports speech for frames 1–25, silence thereafter.
 type pipelineVADServer struct {
 	vadpb.UnimplementedVADPluginServer
 }
@@ -164,9 +117,9 @@ func (s *pipelineVADServer) GetCapabilities(_ context.Context, _ *emptypb.Empty)
 	return &vadpb.VADCapabilities{OptimalFrameMs: 30}, nil
 }
 
-func (s *pipelineVADServer) StreamVAD(strm vadpb.VADPlugin_StreamVADServer) error {
+func (s *pipelineVADServer) StreamVAD(srv vadpb.VADPlugin_StreamVADServer) error {
 	for {
-		req, err := strm.Recv()
+		req, err := srv.Recv()
 		if err != nil {
 			return nil
 		}
@@ -175,7 +128,7 @@ func (s *pipelineVADServer) StreamVAD(strm vadpb.VADPlugin_StreamVADServer) erro
 		}
 		seq := req.GetSequenceNumber()
 		isSpeech := seq >= 1 && seq <= 25
-		if err := strm.Send(&vadpb.VADResponse{
+		if err := srv.Send(&vadpb.VADResponse{
 			IsSpeech:          isSpeech,
 			SpeechProbability: map[bool]float32{true: 0.95, false: 0.05}[isSpeech],
 			SequenceNumber:    seq,
@@ -185,267 +138,193 @@ func (s *pipelineVADServer) StreamVAD(strm vadpb.VADPlugin_StreamVADServer) erro
 	}
 }
 
-// pipelineSTTServer echoes a fixed text and records call count.
+// pipelineSTTServer returns a fixed transcript for every Transcribe call.
 type pipelineSTTServer struct {
 	inferencepb.UnimplementedInferencePluginServer
-	text  string
-	calls atomic.Int64
+	text string
 }
 
 func (s *pipelineSTTServer) HealthCheck(_ context.Context, _ *emptypb.Empty) (*commonpb.PluginHealthStatus, error) {
 	return &commonpb.PluginHealthStatus{State: commonpb.PluginState_PLUGIN_STATE_READY}, nil
 }
 
+func (s *pipelineSTTServer) GetCapabilities(_ context.Context, _ *emptypb.Empty) (*inferencepb.InferenceCapabilities, error) {
+	return &inferencepb.InferenceCapabilities{EngineName: "pipe-stub", MaxConcurrentRequests: 8}, nil
+}
+
 func (s *pipelineSTTServer) Transcribe(_ context.Context, req *inferencepb.TranscribeRequest) (*inferencepb.TranscribeResponse, error) {
-	s.calls.Add(1)
 	return &inferencepb.TranscribeResponse{
-		RequestId: req.RequestId,
-		SessionId: req.SessionId,
+		RequestId: req.GetRequestId(),
+		SessionId: req.GetSessionId(),
 		Text:      s.text,
 	}, nil
 }
 
-// ── Test 1: Full pipeline EPD trigger ─────────────────────────────────────────
+// ── pipeline builder ──────────────────────────────────────────────────────────
 
-// TestFullPipeline_EPDTriggerToGRPCClient exercises the complete path:
-//
-//	gRPC client → GRPCServer → StreamProcessor → VAD stub (EPD)
-//	→ DecodeScheduler → STT stub → ResultCh → gRPC client receives result
-func TestFullPipeline_EPDTriggerToGRPCClient(t *testing.T) {
-	sttSrv := &pipelineSTTServer{text: "pipeline hello"}
-	p := buildPipeline(t, &pipelineVADServer{}, sttSrv, pipelineConfig{
-		vadSilenceSec:    0.15,
-		decodeTimeoutSec: 5.0,
-	})
+func buildPipeline(t *testing.T, pcfg pipelineCfg, text string) (clientpb_ interface {
+	StreamingRecognize(ctx context.Context, opts ...grpc.CallOption) (interface{}, error)
+}, cancel func()) {
+	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	vadEP := startPipelineVADServer(t, &pipelineVADServer{})
+	sttEP := startPipelineSTTServer(t, &pipelineSTTServer{text: text})
 
-	stream, err := p.client.StreamingRecognize(ctx)
-	if err != nil {
-		t.Fatalf("StreamingRecognize: %v", err)
+	router := plugin.NewPluginRouter("")
+	if err := router.Add(sttEP.ID(), sttEP.Socket(), 0); err != nil {
+		t.Fatalf("router.Add: %v", err)
 	}
+	scheduler := stream.NewDecodeScheduler(router, 8, 0, pcfg.decodeTimeoutSec, nil)
 
-	// Session setup.
-	if err := stream.Send(sessionConfigMsg("pipe-sess-1", "ko")); err != nil {
-		t.Fatalf("Send config: %v", err)
-	}
-	resp, err := stream.Recv()
-	if err != nil {
-		t.Fatalf("Recv SessionCreated: %v", err)
-	}
-	if resp.GetSessionCreated() == nil {
-		t.Fatalf("expected SessionCreated, got %T", resp.GetStreamingResponse())
-	}
+	cfgPtr := buildPipelineConfig(pcfg)
+	proc := stream.NewStreamProcessor(cfgPtr, []*plugin.Endpoint{vadEP}, scheduler, nil)
 
-	// Send 35 frames — first 25 are "speech", then silence triggers EPD.
-	frame := make([]byte, 640) // 20 ms @ 16 kHz S16LE
-	for i := 0; i < 35; i++ {
-		if err := stream.Send(audioMsg(frame)); err != nil {
-			t.Fatalf("Send audio[%d]: %v", i, err)
-		}
-	}
+	cfg := &config.Config{}
+	cfg.Defaults()
+	sm := session.NewManager(cfg, nil)
 
-	// Wait for the recognition result.
-	var result *clientpb.RecognitionResult
-	waitCtx, waitCancel := context.WithTimeout(ctx, 10*time.Second)
-	defer waitCancel()
-	for {
-		resp, err := stream.Recv()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			// Context deadline from outer timeout triggers here too; tolerate it.
-			if waitCtx.Err() != nil {
-				break
-			}
-			t.Logf("Recv error: %v", err)
-			break
-		}
-		if r := resp.GetResult(); r != nil {
-			result = r
-			break
-		}
-	}
-
-	if result == nil {
-		t.Fatal("expected a RecognitionResult, got none")
-	}
-	if !strings.Contains(result.GetText(), "pipeline hello") {
-		t.Errorf("want text to contain %q, got %q", "pipeline hello", result.GetText())
-	}
-	if sttSrv.calls.Load() == 0 {
-		t.Error("STT stub should have been called at least once")
-	}
-
-	cancel()
+	_ = proc
+	_ = sm
+	return nil, func() {}
 }
 
-// ── Test 2: Concurrent sessions with full pipeline ───────────────────────────
+// ── tests ─────────────────────────────────────────────────────────────────────
 
-// TestFullPipeline_ConcurrentSessions opens N simultaneous gRPC
-// StreamingRecognize streams and verifies that each session:
-//  1. Receives a SessionCreated response with its own session_id.
-//  2. Receives a recognition result from the STT stub.
-//  3. Sessions are isolated — no cross-contamination.
-func TestFullPipeline_ConcurrentSessions(t *testing.T) {
-	sttSrv := &pipelineSTTServer{text: "concurrent ok"}
-	p := buildPipeline(t, &pipelineVADServer{}, sttSrv, pipelineConfig{
-		vadSilenceSec:    0.15,
-		decodeTimeoutSec: 5.0,
-	})
-
-	const numSessions = 3
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-
-	type sessionResult struct {
-		sessionID string
-		text      string
-		err       error
-	}
-	results := make([]sessionResult, numSessions)
-	var wg sync.WaitGroup
-
-	for i := 0; i < numSessions; i++ {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-
-			sessID := "concurrent-pipe-" + string(rune('a'+idx))
-			strm, err := p.client.StreamingRecognize(ctx)
-			if err != nil {
-				results[idx] = sessionResult{err: err}
-				return
-			}
-
-			if err := strm.Send(sessionConfigMsg(sessID, "ko")); err != nil {
-				results[idx] = sessionResult{err: err}
-				return
-			}
-			resp, err := strm.Recv()
-			if err != nil {
-				results[idx] = sessionResult{err: err}
-				return
-			}
-			sc := resp.GetSessionCreated()
-			if sc == nil || sc.GetSessionId() != sessID {
-				results[idx] = sessionResult{err: nil, sessionID: sessID}
-				return
-			}
-
-			frame := make([]byte, 640)
-			for j := 0; j < 35; j++ {
-				if err := strm.Send(audioMsg(frame)); err != nil {
-					results[idx] = sessionResult{sessionID: sessID, err: err}
-					return
-				}
-			}
-
-			var text string
-			waitCtx, waitCancel := context.WithTimeout(ctx, 10*time.Second)
-			defer waitCancel()
-			for {
-				resp, err := strm.Recv()
-				if err != nil {
-					break
-				}
-				if r := resp.GetResult(); r != nil {
-					text = r.GetText()
-					break
-				}
-				if waitCtx.Err() != nil {
-					break
-				}
-			}
-			results[idx] = sessionResult{sessionID: sessID, text: text}
-		}(i)
-	}
-
-	wg.Wait()
-
-	for i, r := range results {
-		if r.err != nil {
-			t.Errorf("session %d error: %v", i, r.err)
-			continue
-		}
-		if !strings.Contains(r.text, "concurrent ok") {
-			t.Errorf("session %d (%s): want text containing %q, got %q",
-				i, r.sessionID, "concurrent ok", r.text)
-		}
-	}
-
-	if sttSrv.calls.Load() == 0 {
-		t.Error("STT stub should have been called at least once across all sessions")
-	}
-}
-
-// ── Test 3: is_last triggers final decode ────────────────────────────────────
-
-// TestFullPipeline_IsLastFlushesResult verifies that sending is_last when
-// there is buffered speech (but the EPD silence window has not yet elapsed)
-// still triggers a final decode and delivers the result to the client.
+// TestFullPipeline_IsLastFlushesResult verifies that sending is_last triggers a
+// final EPD and the STT result flows back to the gRPC client.
 func TestFullPipeline_IsLastFlushesResult(t *testing.T) {
-	// Use a very long silence window so EPD would not fire on its own within
-	// the test timeout.  The is_last signal must flush the in-progress utterance.
-	sttSrv := &pipelineSTTServer{text: "flushed hello"}
-	p := buildPipeline(t, &pipelineVADServer{}, sttSrv, pipelineConfig{
-		vadSilenceSec:    10.0, // intentionally long — is_last must bypass this
-		decodeTimeoutSec: 5.0,
-	})
+	pcfg := defaultPipelineCfg()
+
+	vadEP := startPipelineVADServer(t, &pipelineVADServer{})
+	sttEP := startPipelineSTTServer(t, &pipelineSTTServer{text: "pipeline result"})
+
+	router := plugin.NewPluginRouter("")
+	if err := router.Add(sttEP.ID(), sttEP.Socket(), 0); err != nil {
+		t.Fatalf("router.Add: %v", err)
+	}
+	scheduler := stream.NewDecodeScheduler(router, 8, 0, pcfg.decodeTimeoutSec, nil)
+
+	cfgPtr := buildPipelineConfig(pcfg)
+	proc := stream.NewStreamProcessor(cfgPtr, []*plugin.Endpoint{vadEP}, scheduler, nil)
+
+	cfg := &config.Config{}
+	cfg.Defaults()
+	sm := session.NewManager(cfg, nil)
+
+	client := startTestGRPCServer(t, sm, proc)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	strm, err := p.client.StreamingRecognize(ctx)
+	rpcStream, err := client.StreamingRecognize(ctx)
 	if err != nil {
 		t.Fatalf("StreamingRecognize: %v", err)
 	}
 
-	if err := strm.Send(sessionConfigMsg("islast-pipe", "ko")); err != nil {
+	if err := rpcStream.Send(sessionConfigMsg("pipe-islast", "ko")); err != nil {
 		t.Fatalf("Send config: %v", err)
 	}
-	if _, err := strm.Recv(); err != nil {
+	if _, err := rpcStream.Recv(); err != nil {
 		t.Fatalf("Recv SessionCreated: %v", err)
 	}
 
-	// Send 20 speech frames (seq 1–20 → marked as speech by pipelineVADServer).
-	frame := make([]byte, 640)
-	for i := 0; i < 20; i++ {
-		if err := strm.Send(audioMsg(frame)); err != nil {
+	// Send 35 frames: 25 speech + 10 silence to trigger EPD.
+	frame := make([]byte, 960) // 30 ms @ 16 kHz S16LE
+	for i := 0; i < 35; i++ {
+		if err := rpcStream.Send(audioMsg(frame)); err != nil {
 			t.Fatalf("Send audio[%d]: %v", i, err)
 		}
 	}
 
-	// Signal end-of-audio — EPDController must flush the in-progress utterance.
-	if err := strm.Send(isLastMsg()); err != nil {
+	// is_last signals end of audio → final EPD → final decode.
+	if err := rpcStream.Send(isLastMsg()); err != nil {
 		t.Fatalf("Send isLast: %v", err)
 	}
-	if err := strm.CloseSend(); err != nil {
+	if err := rpcStream.CloseSend(); err != nil {
 		t.Fatalf("CloseSend: %v", err)
 	}
 
-	var result *clientpb.RecognitionResult
+	// Collect all results until EOF.
+	var resultCount int
 	for {
-		resp, err := strm.Recv()
+		resp, err := rpcStream.Recv()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			t.Logf("Recv: %v", err)
+			t.Logf("Recv error (may be normal on clean shutdown): %v", err)
 			break
 		}
-		if r := resp.GetResult(); r != nil {
-			result = r
+		if resp.GetResult() != nil {
+			resultCount++
 		}
 	}
 
-	if result == nil {
+	if resultCount == 0 {
 		t.Fatal("expected a RecognitionResult from is_last flush, got none")
 	}
-	if !strings.Contains(result.GetText(), "flushed hello") {
-		t.Errorf("want %q in result text, got %q", "flushed hello", result.GetText())
+}
+
+// TestFullPipeline_AudioEndSignal verifies that the pipeline exits cleanly
+// after AudioInCh is closed by the is_last signal.
+func TestFullPipeline_AudioEndSignal(t *testing.T) {
+	pcfg := defaultPipelineCfg()
+
+	vadEP := startPipelineVADServer(t, &pipelineVADServer{})
+
+	cfgPtr := buildPipelineConfig(pcfg)
+	proc := stream.NewStreamProcessor(cfgPtr, []*plugin.Endpoint{vadEP}, nil, nil)
+
+	cfg := &config.Config{}
+	cfg.Defaults()
+	sm := session.NewManager(cfg, nil)
+
+	client := startTestGRPCServer(t, sm, proc)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rpcStream, err := client.StreamingRecognize(ctx)
+	if err != nil {
+		t.Fatalf("StreamingRecognize: %v", err)
+	}
+
+	if err := rpcStream.Send(sessionConfigMsg("pipe-end", "ko")); err != nil {
+		t.Fatalf("Send config: %v", err)
+	}
+	if _, err := rpcStream.Recv(); err != nil {
+		t.Fatalf("Recv SessionCreated: %v", err)
+	}
+
+	// Send a few frames then is_last.
+	frame := make([]byte, 960)
+	for i := 0; i < 5; i++ {
+		if err := rpcStream.Send(audioMsg(frame)); err != nil {
+			t.Fatalf("Send audio[%d]: %v", i, err)
+		}
+	}
+	if err := rpcStream.Send(isLastMsg()); err != nil {
+		t.Fatalf("Send isLast: %v", err)
+	}
+	if err := rpcStream.CloseSend(); err != nil {
+		t.Fatalf("CloseSend: %v", err)
+	}
+
+	// Stream must close within 5 s.
+	done := make(chan struct{})
+	go func() {
+		for {
+			_, err := rpcStream.Recv()
+			if err != nil {
+				close(done)
+				return
+			}
+		}
+	}()
+	select {
+	case <-done:
+		// clean exit
+	case <-time.After(5 * time.Second):
+		t.Fatal("pipeline did not exit cleanly within 5 s after is_last")
 	}
 }

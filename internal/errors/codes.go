@@ -32,8 +32,10 @@ const (
 	ErrUnsupportedEncoding     ErrorCode = "ERR1015"
 	ErrFirstMessageNotConfig   ErrorCode = "ERR1016"
 	ErrUnsupportedLanguage     ErrorCode = "ERR1017"
-	ErrSessionNotFound         ErrorCode = "ERR1018"
-	ErrResumeTokenInvalid      ErrorCode = "ERR1019"
+	ErrSessionNotFound                  ErrorCode = "ERR1018"
+	ErrResumeTokenInvalid               ErrorCode = "ERR1019"
+	ErrEngineEndpointingUnsupported     ErrorCode = "ERR1020"
+	ErrHybridNotSupported               ErrorCode = "ERR1021"
 )
 
 // ERR2xxx: decode pipeline errors.
@@ -55,6 +57,8 @@ const (
 	ErrCodecConversionFailed    ErrorCode = "ERR3003"
 	ErrVADStreamConnectFailed   ErrorCode = "ERR3004"
 	ErrAudioBufferOverflow      ErrorCode = "ERR3005"
+	ErrStreamingEndpointLost   ErrorCode = "ERR3006"
+	ErrEngineResponseTimeout   ErrorCode = "ERR3007"
 )
 
 // ERR4xxx: admin/HTTP errors.
@@ -97,8 +101,10 @@ var errorSpecs = map[ErrorCode]ErrorSpec{
 	ErrUnsupportedEncoding:       {ErrUnsupportedEncoding, codes.InvalidArgument, http.StatusBadRequest, "unsupported audio encoding"},
 	ErrFirstMessageNotConfig:     {ErrFirstMessageNotConfig, codes.InvalidArgument, http.StatusBadRequest, "first message must be session_config"},
 	ErrUnsupportedLanguage:       {ErrUnsupportedLanguage, codes.InvalidArgument, http.StatusBadRequest, "unsupported language code"},
-	ErrSessionNotFound:           {ErrSessionNotFound, codes.NotFound, http.StatusNotFound, "session not found or expired"},
-	ErrResumeTokenInvalid:        {ErrResumeTokenInvalid, codes.PermissionDenied, http.StatusForbidden, "resume token invalid or session already active"},
+	ErrSessionNotFound:                  {ErrSessionNotFound, codes.NotFound, http.StatusNotFound, "session not found or expired"},
+	ErrResumeTokenInvalid:               {ErrResumeTokenInvalid, codes.PermissionDenied, http.StatusForbidden, "resume token invalid or session already active"},
+	ErrEngineEndpointingUnsupported:     {ErrEngineEndpointingUnsupported, codes.InvalidArgument, http.StatusBadRequest, "engine does not support requested endpointing mode"},
+	ErrHybridNotSupported:               {ErrHybridNotSupported, codes.Unimplemented, http.StatusNotImplemented, "hybrid endpointing is not supported in this release"},
 
 	ErrDecodeTimeout:             {ErrDecodeTimeout, codes.DeadlineExceeded, http.StatusGatewayTimeout, "decode timed out"},
 	ErrDecodeTaskFailed:          {ErrDecodeTaskFailed, codes.Internal, http.StatusInternalServerError, "decode task failed"},
@@ -114,6 +120,8 @@ var errorSpecs = map[ErrorCode]ErrorSpec{
 	ErrCodecConversionFailed:     {ErrCodecConversionFailed, codes.Internal, http.StatusInternalServerError, "codec conversion failed"},
 	ErrVADStreamConnectFailed:    {ErrVADStreamConnectFailed, codes.Internal, http.StatusInternalServerError, "VAD stream connect failed"},
 	ErrAudioBufferOverflow:       {ErrAudioBufferOverflow, codes.Internal, http.StatusInternalServerError, "audio ring buffer overflow"},
+	ErrStreamingEndpointLost:    {ErrStreamingEndpointLost, codes.Unavailable, http.StatusServiceUnavailable, "streaming inference endpoint lost mid-session"},
+	ErrEngineResponseTimeout:    {ErrEngineResponseTimeout, codes.DeadlineExceeded, http.StatusGatewayTimeout, "streaming engine response timeout"},
 
 	ErrAdminDisabled:             {ErrAdminDisabled, codes.Unimplemented, http.StatusNotImplemented, "admin API disabled"},
 	ErrModelAlreadyLoaded:        {ErrModelAlreadyLoaded, codes.AlreadyExists, http.StatusConflict, "model already loaded"},

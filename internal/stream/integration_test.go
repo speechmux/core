@@ -160,7 +160,7 @@ func TestStreamProcessor_EPDTrigger(t *testing.T) {
 	if err := router.Add(sttEP.ID(), sttEP.Socket(), 0); err != nil {
 		t.Fatalf("router.Add: %v", err)
 	}
-	scheduler := stream.NewDecodeScheduler(router, 4, 5.0, nil)
+	scheduler := stream.NewDecodeScheduler(router, 4, 0, 5.0, nil)
 
 	cfgPtr := newTestConfig(0.15, 5.0)
 	proc := stream.NewStreamProcessor(cfgPtr, []*plugin.Endpoint{vadEP}, scheduler, nil)

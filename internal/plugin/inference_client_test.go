@@ -45,6 +45,10 @@ func (m *mockInferencePlugin) HealthCheck(ctx context.Context, req *emptypb.Empt
 	return nil, errors.New("healthCheckFn not set")
 }
 
+func (m *mockInferencePlugin) TranscribeStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[inferencepb.StreamRequest, inferencepb.StreamResponse], error) {
+	return nil, errors.New("TranscribeStream not implemented in mock")
+}
+
 // ── helper ────────────────────────────────────────────────────────────────────
 
 // newInferenceClientWithMock returns an InferenceClient whose gRPC stub is

@@ -8,11 +8,18 @@ import (
 	"time"
 )
 
+// DecodeConfig holds scheduler capacity settings for batch and streaming decodes.
+type DecodeConfig struct {
+	MaxPending           int `yaml:"max_pending"`            // batch unary queue depth; 0 = unlimited
+	MaxStreamingSessions int `yaml:"max_streaming_sessions"` // streaming session cap; 0 = unlimited
+}
+
 // Config is the top-level runtime configuration.
 // It is stored behind an atomic.Pointer[Config] for lock-free hot-reload.
 type Config struct {
 	Server         ServerConfig              `yaml:"server"`
 	Stream         StreamConfig              `yaml:"stream"`
+	Decode         DecodeConfig              `yaml:"decode"`
 	Codec          CodecConfig               `yaml:"codec"`
 	RateLimit      RateLimitConfig           `yaml:"rate_limit"`
 	Auth           AuthConfig                `yaml:"auth"`

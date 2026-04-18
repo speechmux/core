@@ -37,6 +37,11 @@ stream:
                                         # the session with ERR3004. REALTIME: logs a warning and records
                                         # a metric, but does not terminate. Set to 0 to disable.
 
+decode:
+  max_pending: 0              # Batch unary queue depth; 0 = unlimited. Increase to cap concurrent STT RPCs.
+  max_streaming_sessions: 16  # Max concurrent streaming sessions; 0 = unlimited. Prevents long-lived streams
+                              # from starving batch decode throughput.
+
 codec:
   target_sample_rate: 16000  # Target PCM sample rate (Hz). Incoming audio is resampled to this.
 

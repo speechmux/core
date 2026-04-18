@@ -89,7 +89,7 @@ func newTestScheduler(t *testing.T, srv inferencepb.InferencePluginServer) *Deco
 		t.Fatalf("router.Add: %v", err)
 	}
 
-	return NewDecodeScheduler(router, 0, 10.0, nil)
+	return NewDecodeScheduler(router, 0, 0, 10.0, nil)
 }
 
 // ── tests ──────────────────────────────────────────────────────────────────────

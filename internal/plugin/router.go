@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -10,6 +11,10 @@ import (
 
 	commonpb "github.com/speechmux/proto/gen/go/common/v1"
 )
+
+// ErrPinnedEndpointLost is returned by Pinned when the session's pinned
+// endpoint is no longer healthy (circuit open or endpoint removed).
+var ErrPinnedEndpointLost = errors.New("pinned inference endpoint lost")
 
 // Routing mode constants matching the plugins.yaml routing_mode field.
 const (
@@ -44,6 +49,7 @@ type PluginRouter struct {
 	counter      atomic.Int64           // used by round_robin
 	probeTimeout time.Duration          // per-probe HealthCheck timeout; 0 defaults to 5 s in probeAll
 	cb           EndpointCircuitBreaker // applied to every endpoint added via Add(); zero = use defaults
+	pins         sync.Map               // map[sessionID string]*InferenceClient
 }
 
 // EndpointSummary is a point-in-time snapshot of a registered endpoint's state.
@@ -289,8 +295,40 @@ func (r *PluginRouter) StartHealthProbe(ctx context.Context, interval, probeTime
 	}()
 }
 
-// UnbindSession is a no-op stub reserved for future session-affinity support.
-func (r *PluginRouter) UnbindSession(_ string) {}
+// Pin binds sessionID to a healthy endpoint chosen by the router's normal policy.
+// Subsequent Pinned(sessionID) calls return the same client until Unpin is called.
+func (r *PluginRouter) Pin(sessionID string) (*InferenceClient, error) {
+	client, err := r.Route()
+	if err != nil {
+		return nil, err
+	}
+	r.pins.Store(sessionID, client)
+	return client, nil
+}
+
+// Pinned returns the client previously bound to sessionID. Returns
+// ErrPinnedEndpointLost when the pinned endpoint is no longer healthy.
+func (r *PluginRouter) Pinned(sessionID string) (*InferenceClient, error) {
+	v, ok := r.pins.Load(sessionID)
+	if !ok {
+		return nil, fmt.Errorf("no pin for session %q", sessionID)
+	}
+	client := v.(*InferenceClient)
+	if !client.endpoint.IsHealthy() {
+		return nil, ErrPinnedEndpointLost
+	}
+	return client, nil
+}
+
+// Unpin releases the session binding. Idempotent.
+func (r *PluginRouter) Unpin(sessionID string) {
+	r.pins.Delete(sessionID)
+}
+
+// UnbindSession calls Unpin so that any existing callers continue to work.
+func (r *PluginRouter) UnbindSession(sessionID string) {
+	r.Unpin(sessionID)
+}
 
 // addEntry directly appends a pre-built client entry to the router.
 // Used only by intra-package tests that need control over InferenceClient

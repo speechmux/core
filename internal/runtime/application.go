@@ -88,7 +88,7 @@ func New(cfgLoader *config.Loader, pluginsCfg *config.PluginsConfig) (*Applicati
 			HalfOpenTimeout:  pluginsCfg.Inference.CircuitBreaker.HalfOpenTimeout,
 		})
 	}
-	scheduler := stream.NewDecodeScheduler(inferRouter, 0, cfg.Stream.DecodeTimeoutSec, prom)
+	scheduler := stream.NewDecodeScheduler(inferRouter, cfg.Decode.MaxPending, cfg.Decode.MaxStreamingSessions, cfg.Stream.DecodeTimeoutSec, prom)
 
 	// Populate the router from the static configuration (if any).
 	if pluginsCfg != nil {

@@ -20,7 +20,7 @@ func newEmptyRouter() *plugin.PluginRouter {
 // ── Route error propagates as ErrAllPluginsUnavailable ─────────────────────
 
 func TestDecodeScheduler_NoEndpoints_ReturnsAllPluginsUnavailable(t *testing.T) {
-	scheduler := NewDecodeScheduler(newEmptyRouter(), 0, 10.0, nil)
+	scheduler := NewDecodeScheduler(newEmptyRouter(), 0, 0, 10.0, nil)
 	ctx := context.Background()
 
 	_, err := scheduler.Submit(ctx, "s1", "r1", []byte{0, 0}, 16000, "en",
@@ -42,7 +42,7 @@ func TestDecodeScheduler_NoEndpoints_ReturnsAllPluginsUnavailable(t *testing.T) 
 
 func TestDecodeScheduler_PendingFull_PartialDropped(t *testing.T) {
 	// maxPending = 0 immediately saturates.  Fill with the non-blocking path.
-	scheduler := NewDecodeScheduler(newEmptyRouter(), 1, 10.0, nil)
+	scheduler := NewDecodeScheduler(newEmptyRouter(), 1, 0, 10.0, nil)
 	// Fill the slot manually.
 	scheduler.pending <- struct{}{}
 
@@ -65,7 +65,7 @@ func TestDecodeScheduler_PendingFull_PartialDropped(t *testing.T) {
 }
 
 func TestDecodeScheduler_PendingFull_FinalTimesOut(t *testing.T) {
-	scheduler := NewDecodeScheduler(newEmptyRouter(), 1, 10.0, nil)
+	scheduler := NewDecodeScheduler(newEmptyRouter(), 1, 0, 10.0, nil)
 	// Shorten maxDecodeWait to avoid a slow test.
 	scheduler.maxDecodeWait = 50 * time.Millisecond
 	// Fill the slot manually.
@@ -93,7 +93,7 @@ func TestDecodeScheduler_PendingFull_FinalTimesOut(t *testing.T) {
 // ── Context cancellation releases waiting goroutine ────────────────────────
 
 func TestDecodeScheduler_CtxCancelledWhileWaiting(t *testing.T) {
-	scheduler := NewDecodeScheduler(newEmptyRouter(), 1, 10.0, nil)
+	scheduler := NewDecodeScheduler(newEmptyRouter(), 1, 0, 10.0, nil)
 	scheduler.pending <- struct{}{} // fill slot
 
 	ctx, cancel := context.WithCancel(context.Background())
