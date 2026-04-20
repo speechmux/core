@@ -188,3 +188,50 @@ func TestAudioRingBuffer_LatestSequence(t *testing.T) {
 		t.Fatalf("after DropOldest: LatestSequence = %d, want 9", got)
 	}
 }
+
+func TestAudioRingBuffer_TrimByAge(t *testing.T) {
+	buf := NewAudioRingBuffer(10)
+
+	// Append 3 entries; they all have fresh timestamps.
+	buf.Append(1, []byte("a"))
+	buf.Append(2, []byte("b"))
+	buf.Append(3, []byte("c"))
+
+	// TrimByAge with a large maxSec should leave all entries intact.
+	buf.TrimByAge(60)
+	if got := buf.Size(); got != 3 {
+		t.Fatalf("after large-maxSec TrimByAge: size = %d, want 3", got)
+	}
+
+	// TrimByAge ignores confirmedWatermark — even un-confirmed entries are removed.
+	// Use maxSec=0 to trim everything that is older than "now".
+	// Since entries were just appended they have timestamp ≈ now; use negative
+	// maxSec to force them all into the past.
+	buf.mu.Lock()
+	for i := 0; i < buf.size; i++ {
+		idx := (buf.head + i) % buf.maxEntries
+		buf.entries[idx].timestamp = buf.entries[idx].timestamp.Add(-10 * time.Second)
+	}
+	buf.mu.Unlock()
+
+	buf.TrimByAge(5) // entries are 10 s old; cutoff is 5 s
+	if got := buf.Size(); got != 0 {
+		t.Fatalf("after TrimByAge cutoff: size = %d, want 0", got)
+	}
+
+	// Watermark independence: append 2 un-confirmed entries, age them, TrimByAge removes them.
+	buf2 := NewAudioRingBuffer(10)
+	buf2.Append(10, []byte("x"))
+	buf2.Append(11, []byte("y"))
+	buf2.mu.Lock()
+	for i := 0; i < buf2.size; i++ {
+		idx := (buf2.head + i) % buf2.maxEntries
+		buf2.entries[idx].timestamp = buf2.entries[idx].timestamp.Add(-10 * time.Second)
+	}
+	buf2.mu.Unlock()
+	// No Watermark advance: confirmedWatermark is still 0.
+	buf2.TrimByAge(5)
+	if got := buf2.Size(); got != 0 {
+		t.Fatalf("TrimByAge must trim un-confirmed entries; size = %d, want 0", got)
+	}
+}

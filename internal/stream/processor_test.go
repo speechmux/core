@@ -138,7 +138,7 @@ func TestProcessSession_HappyPath(t *testing.T) {
 	scheduler := stream.NewDecodeScheduler(router, 4, 0, 5.0, nil)
 
 	cfgPtr := newTestConfig(0.15, 5.0)
-	proc := stream.NewStreamProcessor(cfgPtr, []*plugin.Endpoint{vadEP}, scheduler, nil)
+	proc := stream.NewStreamProcessor(cfgPtr, []*plugin.Endpoint{vadEP}, scheduler, nil, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -197,7 +197,7 @@ func TestProcessSession_ContextCancellation(t *testing.T) {
 	vadEP := startVADServer(t, &alwaysSilenceVAD{})
 
 	cfgPtr := newTestConfig(0.5, 5.0)
-	proc := stream.NewStreamProcessor(cfgPtr, []*plugin.Endpoint{vadEP}, nil, nil)
+	proc := stream.NewStreamProcessor(cfgPtr, []*plugin.Endpoint{vadEP}, nil, nil, nil)
 
 	// Use a long-lived parent context so that session and pipeline can start.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -267,7 +267,7 @@ func TestProcessSession_NoInferencePlugin(t *testing.T) {
 
 	// nil scheduler — no inference endpoint.
 	cfgPtr := newTestConfig(0.15, 5.0)
-	proc := stream.NewStreamProcessor(cfgPtr, []*plugin.Endpoint{vadEP}, nil, nil)
+	proc := stream.NewStreamProcessor(cfgPtr, []*plugin.Endpoint{vadEP}, nil, nil, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
@@ -316,7 +316,7 @@ func TestProcessSession_AudioEndSignal(t *testing.T) {
 	vadEP := startVADServer(t, &alwaysSilenceVAD{})
 
 	cfgPtr := newTestConfig(0.5, 5.0)
-	proc := stream.NewStreamProcessor(cfgPtr, []*plugin.Endpoint{vadEP}, nil, nil)
+	proc := stream.NewStreamProcessor(cfgPtr, []*plugin.Endpoint{vadEP}, nil, nil, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
@@ -365,7 +365,7 @@ func TestProcessSession_ResultHasExpectedFields(t *testing.T) {
 	scheduler := stream.NewDecodeScheduler(router, 4, 0, 5.0, nil)
 
 	cfgPtr := newTestConfig(0.15, 5.0)
-	proc := stream.NewStreamProcessor(cfgPtr, []*plugin.Endpoint{vadEP}, scheduler, nil)
+	proc := stream.NewStreamProcessor(cfgPtr, []*plugin.Endpoint{vadEP}, scheduler, nil, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

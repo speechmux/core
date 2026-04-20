@@ -177,7 +177,7 @@ func buildPipeline(t *testing.T, pcfg pipelineCfg, text string) (clientpb_ inter
 	scheduler := stream.NewDecodeScheduler(router, 8, 0, pcfg.decodeTimeoutSec, nil)
 
 	cfgPtr := buildPipelineConfig(pcfg)
-	proc := stream.NewStreamProcessor(cfgPtr, []*plugin.Endpoint{vadEP}, scheduler, nil)
+	proc := stream.NewStreamProcessor(cfgPtr, []*plugin.Endpoint{vadEP}, scheduler, nil, nil)
 
 	cfg := &config.Config{}
 	cfg.Defaults()
@@ -205,7 +205,7 @@ func TestFullPipeline_IsLastFlushesResult(t *testing.T) {
 	scheduler := stream.NewDecodeScheduler(router, 8, 0, pcfg.decodeTimeoutSec, nil)
 
 	cfgPtr := buildPipelineConfig(pcfg)
-	proc := stream.NewStreamProcessor(cfgPtr, []*plugin.Endpoint{vadEP}, scheduler, nil)
+	proc := stream.NewStreamProcessor(cfgPtr, []*plugin.Endpoint{vadEP}, scheduler, nil, nil)
 
 	cfg := &config.Config{}
 	cfg.Defaults()
@@ -273,7 +273,7 @@ func TestFullPipeline_AudioEndSignal(t *testing.T) {
 	vadEP := startPipelineVADServer(t, &pipelineVADServer{})
 
 	cfgPtr := buildPipelineConfig(pcfg)
-	proc := stream.NewStreamProcessor(cfgPtr, []*plugin.Endpoint{vadEP}, nil, nil)
+	proc := stream.NewStreamProcessor(cfgPtr, []*plugin.Endpoint{vadEP}, nil, nil, nil)
 
 	cfg := &config.Config{}
 	cfg.Defaults()

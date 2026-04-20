@@ -36,6 +36,11 @@ stream:
                                         # confirmed watermark before action is taken. BATCH: terminates
                                         # the session with ERR3004. REALTIME: logs a warning and records
                                         # a metric, but does not terminate. Set to 0 to disable.
+  endpointing_source: core              # Who drives utterance finalization: "core" (VAD+EPD) or "engine" (engine auto-finalize).
+  streaming_stt_send_timeout_sec: 1.0   # Per-frame gRPC send timeout on streaming path (seconds); 0 = disable.
+  streaming_finalize_timeout_sec: 3.0   # Seconds to wait for is_final after FINALIZE_UTTERANCE before ERR3007.
+  engine_response_timeout_sec: 5.0      # Lag watchdog for endpointing_source=engine (seconds); 0 = disable.
+  max_utterance_sec: 30.0               # Force FINALIZE_UTTERANCE if engine emits no is_final within this duration; 0 = disable.
 
 decode:
   max_pending: 0              # Batch unary queue depth; 0 = unlimited. Increase to cap concurrent STT RPCs.

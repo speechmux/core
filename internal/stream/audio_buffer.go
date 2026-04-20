@@ -130,6 +130,28 @@ func (b *AudioRingBuffer) Trim() {
 	}
 }
 
+// TrimByAge removes the oldest entries regardless of confirmedWatermark, keeping
+// only entries younger than maxSec. Used when VAD is disabled (endpointing_source=engine)
+// and the watermark never advances — without this, the buffer would grow unbounded.
+//
+// Unlike Trim, TrimByAge does NOT respect the watermark: it may drop audio that has
+// not been acknowledged by VAD. Only call when VAD is not running.
+func (b *AudioRingBuffer) TrimByAge(maxSec float64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	cutoff := time.Now().Add(-time.Duration(float64(time.Second) * maxSec))
+	for b.size > 0 {
+		e := &b.entries[b.head]
+		if e.timestamp.Before(cutoff) {
+			b.head = (b.head + 1) % b.maxEntries
+			b.size--
+		} else {
+			break
+		}
+	}
+}
+
 // Size returns the current number of buffered entries.
 func (b *AudioRingBuffer) Size() int {
 	b.mu.Lock()

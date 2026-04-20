@@ -88,6 +88,24 @@ func (a *ResultAssembler) Update(currentText string, isFinal bool) (committed, u
 	return a.committedSoFar, unstable
 }
 
+// UpdateRaw is a pass-through path for streaming engines that emit explicit
+// committed/unstable text directly (rather than full cumulative transcripts).
+// It still enforces monotonicity: committed may only grow.
+// Returns the (committed, unstable) pair to forward to the client.
+func (a *ResultAssembler) UpdateRaw(committed, unstable string, isFinal bool) (string, string) {
+	if isFinal {
+		full := committed + unstable
+		a.previousText = ""
+		a.committedSoFar += full
+		return a.committedSoFar, ""
+	}
+	// Enforce monotonicity: if engine shrinks committed, pin to previous.
+	if len(committed) < len(a.committedSoFar) {
+		committed = a.committedSoFar
+	}
+	return committed, unstable
+}
+
 // --- helpers ----------------------------------------------------------------
 
 // mergeTranscript prepends the committed prefix to the decoded text unless

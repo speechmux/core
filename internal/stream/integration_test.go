@@ -163,7 +163,7 @@ func TestStreamProcessor_EPDTrigger(t *testing.T) {
 	scheduler := stream.NewDecodeScheduler(router, 4, 0, 5.0, nil)
 
 	cfgPtr := newTestConfig(0.15, 5.0)
-	proc := stream.NewStreamProcessor(cfgPtr, []*plugin.Endpoint{vadEP}, scheduler, nil)
+	proc := stream.NewStreamProcessor(cfgPtr, []*plugin.Endpoint{vadEP}, scheduler, nil, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -263,7 +263,7 @@ func TestStreamProcessor_VADPluginFailure(t *testing.T) {
 
 	cfgPtr := newTestConfig(0.5, 5.0)
 	// No scheduler — decode never fires.
-	proc := stream.NewStreamProcessor(cfgPtr, []*plugin.Endpoint{vadEP}, nil, nil)
+	proc := stream.NewStreamProcessor(cfgPtr, []*plugin.Endpoint{vadEP}, nil, nil, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

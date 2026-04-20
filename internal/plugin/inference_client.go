@@ -21,10 +21,12 @@ type InferenceClient struct {
 	inflight   atomic.Int64 // number of in-flight Transcribe RPCs; used by least_connections routing
 
 	// Engine metadata populated by FetchCapabilities at startup.
-	// Empty strings when GetCapabilities fails or has not been called.
-	engineName string // e.g. "mlx_whisper", "faster_whisper"
-	modelSize  string // e.g. "large-v3-turbo"
-	device     string // e.g. "mps", "cuda", "cpu"
+	// Empty strings/zero values when GetCapabilities fails or has not been called.
+	engineName            string                          // e.g. "mlx_whisper", "faster_whisper"
+	modelSize             string                          // e.g. "large-v3-turbo"
+	device                string                          // e.g. "mps", "cuda", "cpu"
+	streamingMode         inferencepb.StreamingMode       // BATCH_ONLY or NATIVE
+	endpointingCapability inferencepb.EndpointingCapability // NONE, DETECTION, or AUTO_FINALIZE
 }
 
 // NewInferenceClient creates an InferenceClient backed by the given endpoint.
@@ -46,6 +48,8 @@ func (c *InferenceClient) FetchCapabilities(ctx context.Context) error {
 	c.engineName = resp.GetEngineName()
 	c.modelSize = resp.GetModelSize()
 	c.device = resp.GetDevice()
+	c.streamingMode = resp.GetStreamingMode()
+	c.endpointingCapability = resp.GetEndpointingCapability()
 	return nil
 }
 
@@ -60,6 +64,28 @@ func (c *InferenceClient) ModelSize() string { return c.modelSize }
 // Device returns the compute device reported by GetCapabilities (e.g. "mps", "cuda", "cpu").
 // Empty when FetchCapabilities has not been called or failed.
 func (c *InferenceClient) Device() string { return c.device }
+
+// StreamingMode returns the streaming mode reported by GetCapabilities.
+// Returns STREAMING_MODE_UNSPECIFIED when FetchCapabilities has not been called or failed.
+func (c *InferenceClient) StreamingMode() inferencepb.StreamingMode { return c.streamingMode }
+
+// EndpointingCapability returns the endpointing capability reported by GetCapabilities.
+// Returns ENDPOINTING_CAPABILITY_UNSPECIFIED when FetchCapabilities has not been called or failed.
+func (c *InferenceClient) EndpointingCapability() inferencepb.EndpointingCapability {
+	return c.endpointingCapability
+}
+
+// Capabilities returns the full InferenceCapabilities struct populated by FetchCapabilities.
+// Returns a zero-value struct if FetchCapabilities has not been called or failed.
+func (c *InferenceClient) Capabilities() *inferencepb.InferenceCapabilities {
+	return &inferencepb.InferenceCapabilities{
+		EngineName:             c.engineName,
+		ModelSize:              c.modelSize,
+		Device:                 c.device,
+		StreamingMode:          c.streamingMode,
+		EndpointingCapability:  c.endpointingCapability,
+	}
+}
 
 // Inflight returns the number of Transcribe RPCs currently in progress on this client.
 // Used by the least_connections routing mode.

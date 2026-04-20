@@ -80,6 +80,13 @@ type StreamConfig struct {
 	VADFrameTimeoutSec          float64 `yaml:"vad_frame_timeout_sec"`
 	EPDHeartbeatIntervalSec     float64 `yaml:"epd_heartbeat_interval_sec"`
 	VADWatermarkLagThresholdSec float64 `yaml:"vad_watermark_lag_threshold_sec"`
+
+	// Streaming STT fields.
+	EndpointingSource           string  `yaml:"endpointing_source"`             // "core" | "engine"; "hybrid" rejected at load
+	StreamingSttSendTimeoutSec  float64 `yaml:"streaming_stt_send_timeout_sec"` // per-frame send timeout (seconds); 0 = disable
+	StreamingFinalizeTimeoutSec float64 `yaml:"streaming_finalize_timeout_sec"` // wait for is_final after FINALIZE_UTTERANCE (seconds)
+	EngineResponseTimeoutSec    float64 `yaml:"engine_response_timeout_sec"`    // lag watchdog for endpointing_source=engine (seconds); 0 = disable
+	MaxUtteranceSec             float64 `yaml:"max_utterance_sec"`              // force FINALIZE_UTTERANCE if engine emits no is_final (seconds); 0 = disable
 }
 
 // CircuitBreakerConfig holds circuit-breaker tuning for a plugin endpoint pool.
@@ -257,6 +264,21 @@ func (c *Config) Defaults() {
 	if c.Stream.VADWatermarkLagThresholdSec == 0 {
 		c.Stream.VADWatermarkLagThresholdSec = 5.0
 	}
+	if c.Stream.EndpointingSource == "" {
+		c.Stream.EndpointingSource = "core"
+	}
+	if c.Stream.StreamingSttSendTimeoutSec == 0 {
+		c.Stream.StreamingSttSendTimeoutSec = 1.0
+	}
+	if c.Stream.StreamingFinalizeTimeoutSec == 0 {
+		c.Stream.StreamingFinalizeTimeoutSec = 3.0
+	}
+	if c.Stream.EngineResponseTimeoutSec == 0 {
+		c.Stream.EngineResponseTimeoutSec = 5.0
+	}
+	if c.Stream.MaxUtteranceSec == 0 {
+		c.Stream.MaxUtteranceSec = 30.0
+	}
 }
 
 // Validate converts raw integer durations to time.Duration and checks logical
@@ -271,6 +293,14 @@ func (c *Config) Validate() error {
 	c.Server.HTTPShutdownTimeout = time.Duration(c.Server.HTTPShutdownTimeoutRaw) * time.Second
 	if c.TLS.Required && (c.TLS.CertFile == nil || c.TLS.KeyFile == nil) {
 		return fmt.Errorf("tls: tls_required is true but cert_file or key_file is not set")
+	}
+	switch c.Stream.EndpointingSource {
+	case "core", "engine":
+		// valid
+	case "hybrid":
+		return fmt.Errorf("endpointing_source=hybrid is not supported in this release")
+	default:
+		return fmt.Errorf("invalid endpointing_source %q: must be core or engine", c.Stream.EndpointingSource)
 	}
 	return nil
 }

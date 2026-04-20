@@ -104,7 +104,7 @@ func New(cfgLoader *config.Loader, pluginsCfg *config.PluginsConfig) (*Applicati
 	// is not wrapped in a non-nil interface (Go nil-interface pitfall).
 	var proc transport.SessionProcessor
 	if len(vadEndpoints) > 0 {
-		proc = stream.NewStreamProcessor(&ptr, vadEndpoints, scheduler, prom)
+		proc = stream.NewStreamProcessor(&ptr, vadEndpoints, scheduler, inferRouter, prom)
 	}
 
 	// Build codec converter targeting the configured sample rate.

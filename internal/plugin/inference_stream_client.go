@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 
 	inferencepb "github.com/speechmux/proto/gen/go/inference/v1"
@@ -18,6 +19,10 @@ type InferenceStreamClient struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 	seqNum   atomic.Uint64
+	// sendMu serialises all send-side operations (SendAudio, SendFinalize,
+	// SendCancel, Close/CloseSend) so that concurrent callers cannot race on
+	// the gRPC stream's send path.
+	sendMu sync.Mutex
 }
 
 // NewInferenceStreamClient opens a TranscribeStream on ep and sends cfg as the
@@ -56,6 +61,7 @@ func NewInferenceStreamClient(
 // SendAudio atomically increments the sequence counter and sends an AudioChunk.
 func (c *InferenceStreamClient) SendAudio(pcm []byte) (uint64, error) {
 	seq := c.seqNum.Add(1)
+	c.sendMu.Lock()
 	err := c.stream.Send(&inferencepb.StreamRequest{
 		Payload: &inferencepb.StreamRequest_Audio{
 			Audio: &inferencepb.AudioChunk{
@@ -64,6 +70,7 @@ func (c *InferenceStreamClient) SendAudio(pcm []byte) (uint64, error) {
 			},
 		},
 	})
+	c.sendMu.Unlock()
 	if err != nil {
 		c.endpoint.RecordFailure()
 		return 0, fmt.Errorf("stream send audio seq=%d: %w", seq, err)
@@ -82,11 +89,13 @@ func (c *InferenceStreamClient) SendCancel() error {
 }
 
 func (c *InferenceStreamClient) sendControl(kind inferencepb.StreamControl_Kind) error {
+	c.sendMu.Lock()
 	err := c.stream.Send(&inferencepb.StreamRequest{
 		Payload: &inferencepb.StreamRequest_Control{
 			Control: &inferencepb.StreamControl{Kind: kind},
 		},
 	})
+	c.sendMu.Unlock()
 	if err != nil {
 		c.endpoint.RecordFailure()
 		return fmt.Errorf("stream send control %v: %w", kind, err)
@@ -108,5 +117,14 @@ func (c *InferenceStreamClient) Recv() (*inferencepb.StreamResponse, error) {
 // Close half-closes the send side of the stream. Does NOT cancel ctx — context
 // cancellation is owned by the parent session so recv can drain in-flight responses.
 func (c *InferenceStreamClient) Close() {
+	c.sendMu.Lock()
 	_ = c.stream.CloseSend()
+	c.sendMu.Unlock()
+}
+
+// CancelStream cancels the underlying gRPC stream context, unblocking any
+// in-flight Recv call. Used by streamingDecodeEngine when it needs to force
+// the recvLoop to exit (e.g., watchdog timeout, error response).
+func (c *InferenceStreamClient) CancelStream() {
+	c.cancel()
 }
