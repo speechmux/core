@@ -12,9 +12,12 @@ vad:
 inference:
   routing_mode: "least_connections"  # Routing strategy: round_robin | least_connections | active_standby.
   endpoints:                         # STT inference endpoint pool. Add entries for horizontal scaling.
-    - id: "whisper-mlx"              # Unique ID for this endpoint; used in health reports and routing.
+    - id: "whisper-mlx"              # Unique ID for this endpoint; used in health reports and engine_hint routing.
       socket: "/tmp/speechmux/stt-mlx.sock"  # Unix domain socket path. Must match server.socket in the STT plugin config.
       priority: 1                    # Priority for active_standby routing. Higher = preferred.
+    - id: "sherpa-onnx"              # sherpa-onnx Zipformer streaming engine (ko/en/ja). Start with inference-sherpa-onnx.yaml.
+      socket: "/tmp/speechmux/stt-sherpa.sock"  # Must match server.socket in plugin-stt/config/inference-sherpa-onnx.yaml.
+      priority: 1                    # Same priority as whisper-mlx; engine_hint selects explicitly.
   health_check_interval_sec: 10     # Interval (seconds) between health probes to each inference endpoint.
   health_probe_timeout_sec: 5       # Per-probe gRPC HealthCheck timeout (seconds). Probes exceeding this
                                     # are treated as failures and may open the circuit breaker.

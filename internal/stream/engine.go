@@ -57,7 +57,7 @@ type DecodeResult struct {
 // Two implementations exist:
 //   - batchDecodeEngine: unary Transcribe calls on per-utterance audio plus
 //     adaptive partial decodes. Appropriate for Whisper-family engines.
-//   - streamingDecodeEngine (added in Phase D): persistent bidi stream.
+//   - streamingDecodeEngine: persistent bidi stream.
 //     Appropriate for engines with native streaming support.
 //
 // Lifecycle:

@@ -51,8 +51,8 @@ flowchart TD
 | `internal/runtime` | `errgroup`-based application lifecycle, graceful shutdown |
 | `internal/session` | Session CRUD, auth (API key / signed token), park/resume, idle checker |
 | `internal/transport` | gRPC (`StreamingRecognize`), HTTP (`/health`, `/metrics`, `/admin`), WebSocket bridge |
-| `internal/plugin` | Plugin gRPC clients, circuit breaker (CLOSED→OPEN→HALF_OPEN→CLOSED), `PluginRouter` |
-| `internal/stream` | Pipeline: `AudioRingBuffer`, `frameAggregator`, `EPDController`, `DecodeScheduler`, `ResultAssembler` |
+| `internal/plugin` | Plugin gRPC clients (`InferenceClient` unary, `InferenceStreamClient` bidi-stream), circuit breaker (CLOSED→OPEN→HALF_OPEN→CLOSED), `PluginRouter` |
+| `internal/stream` | Pipeline: `AudioRingBuffer`, `frameAggregator`, `EPDController`, `DecodeScheduler`, `ResultAssembler`; `StreamingEngine` (native-streaming path), `BatchEngine` (unary path) |
 | `internal/codec` | Audio conversion (PCM S16LE, A-law, mu-law, WAV) with resampling |
 | `internal/storage` | Async session audio recording to disk |
 | `internal/errors` | `ERR####` code definitions, gRPC/HTTP status mappings, `PluginErrorCode` translation |
@@ -139,7 +139,10 @@ inference:
   routing_mode: "least_connections"  # round_robin | least_connections | active_standby
   endpoints:
     - id: "whisper-mlx"
-      socket: "/tmp/speechmux/stt.sock"
+      socket: "/tmp/speechmux/stt-mlx.sock"
+      priority: 1
+    - id: "sherpa-onnx"
+      socket: "/tmp/speechmux/stt-sherpa.sock"
       priority: 1
   health_check_interval_sec: 10
   health_probe_timeout_sec: 5
@@ -208,6 +211,7 @@ When `session_timeout_sec > 0`, a background goroutine periodically checks for s
 ## Plugin Routing
 
 - **Session binding**: once assigned, a session stays on the same endpoint
+- **Engine hint**: `engine_hint` in `SessionConfig` pins a session to a named endpoint via `PinByHint`; falls back to normal routing if the endpoint is unavailable
 - **Circuit breaker**: CLOSED → OPEN (N failures) → HALF_OPEN (probe) → CLOSED
 - **Health tracking**: rolling window of success/timeout/error events per endpoint
 - **Dynamic registration**: `POST /admin/plugins` to add/remove endpoints at runtime
@@ -224,10 +228,20 @@ When `session_timeout_sec > 0`, a background goroutine periodically checks for s
 
 ### Key Metrics
 
-- `speechmux_decode_latency_seconds` — inference latency histogram
-- `speechmux_active_sessions` — current session count
+**Batch engine (unary Transcribe)**
+- `speechmux_active_sessions` — current session count (gauge)
+- `speechmux_sessions_total` — cumulative sessions opened (counter)
+- `speechmux_decode_latency_seconds` — inference latency histogram (labels: `type`, `engine`)
+- `speechmux_decode_requests_total` — decode count with success/failure (labels: `type`, `ok`, `engine`)
 - `speechmux_vad_triggers_total` — EPD trigger counter
-- `speechmux_decode_results_total` — success/failure counter
+- `speechmux_vad_watermark_lag_total` — ring buffer watermark lag events
+
+**Streaming engine (TranscribeStream)**
+- `speechmux_streaming_sessions_active` — active streaming sessions (gauge, label: `engine`)
+- `speechmux_streaming_partial_latency_seconds` — partial hypothesis latency histogram (label: `engine`)
+- `speechmux_streaming_finalize_latency_seconds` — final utterance latency histogram (label: `engine`)
+- `speechmux_streaming_session_terminations_total` — session close reasons (labels: `engine`, `reason`)
+- `speechmux_engine_response_timeout_total` — engine response timeout counter (label: `engine`)
 
 ### Distributed Tracing (OpenTelemetry)
 
@@ -307,8 +321,11 @@ For contributors navigating the codebase for the first time, read files in this 
 - `internal/plugin/vad_client.go` — `StreamVAD` bidi-stream to VAD Plugin
 - `internal/stream/epd_controller.go` — VAD results → speech/silence decision (EPD)
 - `internal/stream/decode_scheduler.go` — STT request scheduling, semaphore, partial/final split
-- `internal/plugin/router.go` + `endpoint.go` — STT endpoint routing, health-weighted selection
-- `internal/plugin/inference_client.go` — `Transcribe` unary RPC to STT Plugin
+- `internal/plugin/router.go` + `endpoint.go` — STT endpoint routing, health-weighted selection, `PinByHint`
+- `internal/plugin/inference_client.go` — `Transcribe` unary RPC (batch engines)
+- `internal/plugin/inference_stream_client.go` — `TranscribeStream` bidi-stream (streaming engines)
+- `internal/stream/streaming_engine.go` — per-session streaming engine goroutine loop
+- `internal/stream/batch_engine.go` — per-utterance batch engine decode path
 
 **4. Result assembly**
 - `internal/stream/result_assembler.go` — builds `committed` + `unstable` transcript

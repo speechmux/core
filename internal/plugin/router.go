@@ -306,6 +306,29 @@ func (r *PluginRouter) Pin(sessionID string) (*InferenceClient, error) {
 	return client, nil
 }
 
+// PinByHint binds sessionID to the healthy endpoint whose ID matches hint.
+// If hint is empty or no healthy endpoint matches, it falls back to Pin.
+func (r *PluginRouter) PinByHint(sessionID, hint string) (*InferenceClient, error) {
+	if hint != "" {
+		r.mu.RLock()
+		var matched *InferenceClient
+		for _, e := range r.entries {
+			if e.client.endpoint.ID() == hint && e.client.endpoint.IsHealthy() {
+				matched = e.client
+				break
+			}
+		}
+		r.mu.RUnlock()
+		if matched != nil {
+			r.pins.Store(sessionID, matched)
+			return matched, nil
+		}
+		slog.Warn("engine_hint endpoint unavailable; falling back to normal routing",
+			"hint", hint, "session_id", sessionID)
+	}
+	return r.Pin(sessionID)
+}
+
 // Pinned returns the client previously bound to sessionID. Returns
 // ErrPinnedEndpointLost when the pinned endpoint is no longer healthy.
 func (r *PluginRouter) Pinned(sessionID string) (*InferenceClient, error) {

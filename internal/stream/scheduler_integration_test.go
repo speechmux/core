@@ -1,7 +1,7 @@
 package stream_test
 
-// scheduler_integration_test.go — Phase 6/7 integration tests for
-// DecodeScheduler: concurrent request limiting and plugin failure re-routing.
+// scheduler_integration_test.go — integration tests for DecodeScheduler:
+// concurrent request limiting and plugin failure re-routing.
 
 import (
 	"context"
@@ -33,6 +33,11 @@ func (s *spyMetrics) IncActiveSessions()  {}
 func (s *spyMetrics) DecActiveSessions()  {}
 func (s *spyMetrics) RecordVADTrigger()       {}
 func (s *spyMetrics) RecordVADWatermarkLag() {}
+func (s *spyMetrics) RecordStreamingSessionOpen(_ string)                {}
+func (s *spyMetrics) RecordStreamingSessionClose(_ string, _ string)     {}
+func (s *spyMetrics) RecordStreamingPartialLatency(_ float64, _ string)  {}
+func (s *spyMetrics) RecordStreamingFinalizeLatency(_ float64, _ string) {}
+func (s *spyMetrics) RecordEngineResponseTimeout(_ string)               {}
 func (s *spyMetrics) RecordDecodeLatency(_ float64, _ bool, engineName string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -68,7 +73,7 @@ func (s *slowSTTServer) Transcribe(_ context.Context, req *inferencepb.Transcrib
 	}, nil
 }
 
-// ── Test: concurrent request limit (Phase 6) ──────────────────────────────────
+// ── Test: concurrent request limit ───────────────────────────────────────────
 
 // TestDecodeScheduler_ConcurrentLimit verifies that the global pending
 // semaphore drops partial decodes immediately and blocks final decodes up to
@@ -141,7 +146,7 @@ func (s *errorSTTServer) Transcribe(_ context.Context, _ *inferencepb.Transcribe
 	return nil, grpcStatus.Error(codes.Internal, "stub error")
 }
 
-// ── Test: plugin failure re-routing (Phase 7) ─────────────────────────────────
+// ── Test: plugin failure re-routing ──────────────────────────────────────────
 
 // TestDecodeScheduler_PluginFailureRerouting verifies that once an inference
 // endpoint's circuit breaker opens (after failureThreshold=5 failures), the

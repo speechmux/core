@@ -115,10 +115,10 @@ func (p *StreamProcessor) ProcessSession(ctx context.Context, sess *session.Sess
 			}
 
 			if caps.GetStreamingMode() == inferencepb.StreamingMode_STREAMING_MODE_NATIVE {
-				// Pin the endpoint for the session lifetime (see anti-pattern A5: prefer
-				// Pin before Route; here we already have caps from Route so we accept the
-				// small race — capability mismatch is a deployment error, not a runtime one).
-				pinnedClient, pinErr := p.router.Pin(sess.ID)
+				// Pin the endpoint for the session lifetime. We already have caps from
+				// Route so we accept the small race — capability mismatch is a deployment
+				// error, not a runtime one.
+				pinnedClient, pinErr := p.router.PinByHint(sess.ID, sess.Info.EngineHint)
 				if pinErr != nil {
 					return sttErrors.New(sttErrors.ErrAllPluginsUnavailable, pinErr.Error()).ToGRPC()
 				}
@@ -142,7 +142,11 @@ func (p *StreamProcessor) ProcessSession(ctx context.Context, sess *session.Sess
 				}
 				// streamClient is closed via engine.Close() in the defer below.
 
-				engine = newStreamingDecodeEngine(streamClient, src, cfg.Stream)
+				engineName := pinnedClient.Capabilities().GetEngineName()
+				if engineName == "" {
+					engineName = cfg.Stream.EndpointingSource
+				}
+				engine = newStreamingDecodeEngine(streamClient, src, cfg.Stream, p.obs, engineName)
 			}
 		}
 	}

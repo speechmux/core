@@ -102,8 +102,10 @@ func New(cfgLoader *config.Loader, pluginsCfg *config.PluginsConfig) (*Applicati
 	// Wire the stream processor with both VAD and inference.
 	// Use the SessionProcessor interface type so that a nil concrete pointer
 	// is not wrapped in a non-nil interface (Go nil-interface pitfall).
+	// Create the processor when VAD or inference endpoints are present:
+	// endpointing_source=engine requires inference but no VAD.
 	var proc transport.SessionProcessor
-	if len(vadEndpoints) > 0 {
+	if len(vadEndpoints) > 0 || (pluginsCfg != nil && len(pluginsCfg.Inference.Endpoints) > 0) {
 		proc = stream.NewStreamProcessor(&ptr, vadEndpoints, scheduler, inferRouter, prom)
 	}
 

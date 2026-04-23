@@ -10,9 +10,11 @@
 //
 // Scenarios:
 //
-//	steady  — all sessions start at once, each runs for --session-sec seconds
-//	rampup  — sessions are started evenly over --ramp-up seconds, then all run
-//	spike   — sessions/2 start immediately, sessions/2 more start at duration/3
+//	steady    — all sessions start at once, each runs for --session-sec seconds
+//	rampup    — sessions are started evenly over --ramp-up seconds, then all run
+//	spike     — sessions/2 start immediately, sessions/2 more start at duration/3
+//	streaming — same launch pattern as steady; additionally tracks per-partial
+//	            inter-arrival cadence and finalize latency in the JSON report
 package main
 
 import (
@@ -64,6 +66,9 @@ type sessionResult struct {
 	resultCount    int
 	errCode        string        // empty = success
 	duration       time.Duration // total wall time for this session
+	// Streaming-specific fields (populated only when scenario=streaming).
+	partialInterMs []float64 // inter-arrival times between successive partial results (ms)
+	finalizeLatMs  []float64 // time from first-audio to each is_final result (ms)
 }
 
 // latencyStats holds aggregated percentile latency values in milliseconds.
@@ -89,6 +94,11 @@ type Report struct {
 	TotalResults       int            `json:"total_results"`
 	GoVersion          string         `json:"go_version"`
 	NumCPU             int            `json:"num_cpu"`
+	// Streaming-specific fields (populated only for scenario=streaming; omitempty).
+	StreamingPartialCadenceP50  float64 `json:"streaming_partial_cadence_p50_ms,omitempty"`
+	StreamingPartialCadenceP95  float64 `json:"streaming_partial_cadence_p95_ms,omitempty"`
+	StreamingFinalizeLatencyP50 float64 `json:"streaming_finalize_latency_p50_ms,omitempty"`
+	StreamingFinalizeLatencyP95 float64 `json:"streaming_finalize_latency_p95_ms,omitempty"`
 }
 
 func main() {
@@ -176,6 +186,13 @@ func runScenario(cfg *runConfig, conn *grpc.ClientConn) []sessionResult {
 		}
 		for i := 0; i < spike; i++ {
 			launch(spikedelay)
+		}
+
+	case "streaming":
+		// Same launch pattern as steady; per-session streaming metrics are
+		// collected in runSession and aggregated in buildReport.
+		for i := 0; i < cfg.sessions; i++ {
+			launch(0)
 		}
 
 	default: // steady
@@ -267,6 +284,10 @@ func runSession(cfg *runConfig, conn *grpc.ClientConn, id string) sessionResult 
 	}()
 
 	// Receive results until the stream closes or an error arrives.
+	// For scenario=streaming, track partial inter-arrival cadence and finalize latency.
+	var lastPartialAt time.Time
+	var partialInterMs, finalizeLatMs []float64
+
 	for {
 		msg, err := stream.Recv()
 		if err != nil {
@@ -281,13 +302,29 @@ func runSession(cfg *runConfig, conn *grpc.ClientConn, id string) sessionResult 
 			}
 			break
 		}
-		if msg.GetResult() != nil {
+		if result := msg.GetResult(); result != nil {
+			now := time.Now()
 			res.resultCount++
 			if res.firstResultLat < 0 {
-				res.firstResultLat = time.Since(audioStart)
+				res.firstResultLat = now.Sub(audioStart)
+			}
+			if cfg.scenario == "streaming" {
+				if result.GetIsFinal() {
+					finalizeLatMs = append(finalizeLatMs,
+						float64(now.Sub(audioStart))/float64(time.Millisecond))
+					lastPartialAt = time.Time{} // reset cadence tracking after final
+				} else {
+					if !lastPartialAt.IsZero() {
+						partialInterMs = append(partialInterMs,
+							float64(now.Sub(lastPartialAt))/float64(time.Millisecond))
+					}
+					lastPartialAt = now
+				}
 			}
 		}
 	}
+	res.partialInterMs = partialInterMs
+	res.finalizeLatMs = finalizeLatMs
 
 	<-sendDone
 	res.duration = time.Since(sessionStart)
@@ -346,6 +383,25 @@ func buildReport(cfg *runConfig, results []sessionResult) *Report {
 
 	r.OpenLatency = computeStats(openMs)
 	r.FirstResultLatency = computeStats(firstMs)
+
+	if cfg.scenario == "streaming" {
+		var allPartialInterMs, allFinalizeLatMs []float64
+		for _, res := range results {
+			allPartialInterMs = append(allPartialInterMs, res.partialInterMs...)
+			allFinalizeLatMs = append(allFinalizeLatMs, res.finalizeLatMs...)
+		}
+		sort.Float64s(allPartialInterMs)
+		sort.Float64s(allFinalizeLatMs)
+		if len(allPartialInterMs) > 0 {
+			r.StreamingPartialCadenceP50 = percentile(allPartialInterMs, 50)
+			r.StreamingPartialCadenceP95 = percentile(allPartialInterMs, 95)
+		}
+		if len(allFinalizeLatMs) > 0 {
+			r.StreamingFinalizeLatencyP50 = percentile(allFinalizeLatMs, 50)
+			r.StreamingFinalizeLatencyP95 = percentile(allFinalizeLatMs, 95)
+		}
+	}
+
 	return r
 }
 
@@ -407,4 +463,12 @@ func printReport(r *Report) {
 
 	fmt.Printf("\n--- Throughput ---\n")
 	fmt.Printf("Total results received: %d\n", r.TotalResults)
+
+	if r.StreamingPartialCadenceP50 > 0 || r.StreamingFinalizeLatencyP50 > 0 {
+		fmt.Printf("\n--- Streaming Metrics (ms) ---\n")
+		fmt.Printf("Partial cadence:   p50=%6.1f  p95=%6.1f\n",
+			r.StreamingPartialCadenceP50, r.StreamingPartialCadenceP95)
+		fmt.Printf("Finalize latency:  p50=%6.1f  p95=%6.1f\n",
+			r.StreamingFinalizeLatencyP50, r.StreamingFinalizeLatencyP95)
+	}
 }

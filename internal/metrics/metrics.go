@@ -26,19 +26,37 @@ type MetricsObserver interface {
 	RecordVADTrigger()
 	// RecordVADWatermarkLag records a watermark lag threshold-exceeded event.
 	RecordVADWatermarkLag()
+
+	// Streaming STT session lifecycle and latency.
+	RecordStreamingSessionOpen(engineName string)
+	RecordStreamingSessionClose(engineName string, reason string)
+	RecordStreamingPartialLatency(latencySec float64, engineName string)
+	RecordStreamingFinalizeLatency(latencySec float64, engineName string)
+	RecordEngineResponseTimeout(engineName string)
 }
 
 // ── Prometheus implementation ─────────────────────────────────────────────────
 
+// decodeLatencyBuckets are the shared histogram bucket boundaries used for all
+// latency histograms.
+var decodeLatencyBuckets = []float64{0.1, 0.25, 0.5, 1, 2, 5, 10, 30}
+
 // PrometheusMetrics records metrics to a Prometheus registry.
 type PrometheusMetrics struct {
-	registry      *prometheus.Registry
-	activeSessions prometheus.Gauge
-	sessionsTotal  prometheus.Counter
-	decodeLatency  *prometheus.HistogramVec
-	decodeTotal    *prometheus.CounterVec
-	vadTriggers        prometheus.Counter
+	registry             *prometheus.Registry
+	activeSessions       prometheus.Gauge
+	sessionsTotal        prometheus.Counter
+	decodeLatency        *prometheus.HistogramVec
+	decodeTotal          *prometheus.CounterVec
+	vadTriggers          prometheus.Counter
 	vadWatermarkLagTotal prometheus.Counter
+
+	// Streaming STT observability.
+	streamingActiveSessions  *prometheus.GaugeVec
+	streamingPartialLatency  *prometheus.HistogramVec
+	streamingFinalizeLatency *prometheus.HistogramVec
+	streamingTerminations    *prometheus.CounterVec
+	engineResponseTimeouts   *prometheus.CounterVec
 }
 
 // NewPrometheusMetrics creates and registers all SpeechMux metrics.
@@ -58,7 +76,7 @@ func NewPrometheusMetrics() *PrometheusMetrics {
 		decodeLatency: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "speechmux_decode_latency_seconds",
 			Help:    "Inference decode latency in seconds.",
-			Buckets: []float64{0.1, 0.25, 0.5, 1, 2, 5, 10, 30},
+			Buckets: decodeLatencyBuckets,
 		}, []string{"type", "engine"}), // type = "final" | "partial"; engine = engine_name
 		decodeTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "speechmux_decode_requests_total",
@@ -72,6 +90,28 @@ func NewPrometheusMetrics() *PrometheusMetrics {
 			Name: "speechmux_vad_watermark_lag_total",
 			Help: "Total number of times the VAD watermark lag threshold was exceeded.",
 		}),
+		streamingActiveSessions: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "speechmux_streaming_sessions_active",
+			Help: "Number of currently active streaming STT sessions.",
+		}, []string{"engine_name"}),
+		streamingPartialLatency: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "speechmux_streaming_partial_latency_seconds",
+			Help:    "Latency from audio chunk send time to partial hypothesis receipt.",
+			Buckets: decodeLatencyBuckets,
+		}, []string{"engine_name"}),
+		streamingFinalizeLatency: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "speechmux_streaming_finalize_latency_seconds",
+			Help:    "Latency from FINALIZE_UTTERANCE send to is_final hypothesis receipt.",
+			Buckets: decodeLatencyBuckets,
+		}, []string{"engine_name"}),
+		streamingTerminations: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "speechmux_streaming_session_terminations_total",
+			Help: "Total streaming session terminations by engine and reason.",
+		}, []string{"engine_name", "reason"}),
+		engineResponseTimeouts: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "speechmux_engine_response_timeout_total",
+			Help: "Total engine response lag timeout events.",
+		}, []string{"engine_name"}),
 	}
 
 	reg.MustRegister(
@@ -81,6 +121,11 @@ func NewPrometheusMetrics() *PrometheusMetrics {
 		m.decodeTotal,
 		m.vadTriggers,
 		m.vadWatermarkLagTotal,
+		m.streamingActiveSessions,
+		m.streamingPartialLatency,
+		m.streamingFinalizeLatency,
+		m.streamingTerminations,
+		m.engineResponseTimeouts,
 		// Standard Go runtime metrics.
 		prometheus.NewGoCollector(),
 		prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}),
@@ -108,8 +153,29 @@ func (m *PrometheusMetrics) RecordDecodeResult(isFinal bool, ok bool, engineName
 	m.decodeTotal.WithLabelValues(t, status, engineName).Inc()
 }
 
-func (m *PrometheusMetrics) RecordVADTrigger()       { m.vadTriggers.Inc() }
+func (m *PrometheusMetrics) RecordVADTrigger()      { m.vadTriggers.Inc() }
 func (m *PrometheusMetrics) RecordVADWatermarkLag() { m.vadWatermarkLagTotal.Inc() }
+
+func (m *PrometheusMetrics) RecordStreamingSessionOpen(engineName string) {
+	m.streamingActiveSessions.WithLabelValues(engineName).Inc()
+}
+
+func (m *PrometheusMetrics) RecordStreamingSessionClose(engineName string, reason string) {
+	m.streamingActiveSessions.WithLabelValues(engineName).Dec()
+	m.streamingTerminations.WithLabelValues(engineName, reason).Inc()
+}
+
+func (m *PrometheusMetrics) RecordStreamingPartialLatency(latencySec float64, engineName string) {
+	m.streamingPartialLatency.WithLabelValues(engineName).Observe(latencySec)
+}
+
+func (m *PrometheusMetrics) RecordStreamingFinalizeLatency(latencySec float64, engineName string) {
+	m.streamingFinalizeLatency.WithLabelValues(engineName).Observe(latencySec)
+}
+
+func (m *PrometheusMetrics) RecordEngineResponseTimeout(engineName string) {
+	m.engineResponseTimeouts.WithLabelValues(engineName).Inc()
+}
 
 // TextHandler returns an http.Handler that serves /metrics in Prometheus text format.
 func (m *PrometheusMetrics) TextHandler() http.Handler {
@@ -161,9 +227,15 @@ func decodeType(isFinal bool) string {
 // backend is configured.
 type NopMetrics struct{}
 
-func (NopMetrics) IncActiveSessions()                       {}
-func (NopMetrics) DecActiveSessions()                       {}
+func (NopMetrics) IncActiveSessions()                              {}
+func (NopMetrics) DecActiveSessions()                              {}
 func (NopMetrics) RecordDecodeLatency(_ float64, _ bool, _ string) {}
 func (NopMetrics) RecordDecodeResult(_ bool, _ bool, _ string)     {}
-func (NopMetrics) RecordVADTrigger()       {}
-func (NopMetrics) RecordVADWatermarkLag() {}
+func (NopMetrics) RecordVADTrigger()                               {}
+func (NopMetrics) RecordVADWatermarkLag()                          {}
+
+func (NopMetrics) RecordStreamingSessionOpen(_ string)                    {}
+func (NopMetrics) RecordStreamingSessionClose(_ string, _ string)         {}
+func (NopMetrics) RecordStreamingPartialLatency(_ float64, _ string)      {}
+func (NopMetrics) RecordStreamingFinalizeLatency(_ float64, _ string)     {}
+func (NopMetrics) RecordEngineResponseTimeout(_ string)                   {}

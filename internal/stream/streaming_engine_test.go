@@ -12,6 +12,7 @@ import (
 
 	"github.com/speechmux/core/internal/config"
 	sttErrors "github.com/speechmux/core/internal/errors"
+	"github.com/speechmux/core/internal/metrics"
 	"github.com/speechmux/core/internal/plugin"
 	"github.com/speechmux/core/internal/session"
 	commonpb "github.com/speechmux/proto/gen/go/common/v1"
@@ -62,7 +63,7 @@ func buildEngine(t *testing.T, ep *plugin.Endpoint, src endpointingSource, cfg c
 		t.Fatalf("NewInferenceStreamClient: %v", err)
 	}
 	t.Cleanup(func() { client.Close() })
-	return newStreamingDecodeEngine(client, src, cfg)
+	return newStreamingDecodeEngine(client, src, cfg, metrics.NopMetrics{}, "test-engine")
 }
 
 func startEngine(t *testing.T, e *streamingDecodeEngine) {

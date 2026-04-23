@@ -326,9 +326,10 @@ func (m *Manager) resolveInfo(req *clientpb.SessionConfig, peerIP, apiKey string
 		}
 	}
 
-	// Language and task from RecognitionConfig.
+	// Language, task, and engine preference from RecognitionConfig.
 	if rc := req.GetRecognitionConfig(); rc != nil {
 		info.Language = rc.GetLanguageCode()
+		info.EngineHint = rc.GetEngineHint()
 		switch rc.GetTask() {
 		case clientpb.Task_TASK_TRANSLATE:
 			info.Task = "translate"

@@ -26,6 +26,10 @@ type SessionInfo struct {
 	StreamMode    clientpb.StreamMode
 	Attributes    map[string]string
 
+	// EngineHint is the client-requested engine endpoint ID (from engine_hint in
+	// RecognitionConfig). Empty string means "let the router decide".
+	EngineHint string
+
 	// Audio codec settings resolved from AudioConfig at session creation.
 	// Used by the transport layer to convert incoming audio to PCM S16LE.
 	Encoding         clientpb.AudioEncoding
@@ -61,7 +65,6 @@ type Session struct {
 	processingDone chan struct{}
 
 	// AudioInCh receives codec-converted PCM audio frames.
-	// Wired by the stream processor in Phase 5.
 	AudioInCh chan []byte
 
 	// ResultCh receives recognition results from the decode pipeline.
@@ -96,8 +99,6 @@ func newSession(ctx context.Context, id string, info *SessionInfo) *Session {
 	}
 	s.lastActivity.Store(time.Now())
 
-	// Phase 2 stub goroutine — just waits for the context to be cancelled.
-	// The stream processor (Phase 5) will replace this with full EPD + decode logic.
 	go func() {
 		defer close(s.done)
 		<-sCtx.Done()
