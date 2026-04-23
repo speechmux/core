@@ -17,28 +17,46 @@ flowchart LR
     Core -->|UDS| STT
 ```
 
-Core runs a 6-goroutine pipeline per session:
+Per-session pipeline — **batch engine** (e.g. mlx-whisper): VAD drives utterance boundaries; Core extracts segments and sends each as a single Transcribe RPC:
 
 ```mermaid
 flowchart TD
       classDef external fill:#f5f5f5,stroke:#aaaaaa,stroke-width:1px,stroke-dasharray:5 5,color:#888888
-      
+
       Client["Client"]:::external
       VADPlugin["VAD Plugin"]:::external
       STTPlugin["STT Inference Plugin"]:::external
-      
+
       Client -->|audio| codecConvert["codecConvert"]
       codecConvert --> pcmCh["<i>ch: pcm</i>"]
       pcmCh --> frameAggregator["frameAggregator"]
       pcmCh --> AudioRingBuffer["AudioRingBuffer"]
-      frameAggregator -->|UDS| VADPlugin["VAD Plugin"]
+      frameAggregator -->|"UDS</br>(StreamVAD)"| VADPlugin
       VADPlugin --> vadResultCh["<i>ch: vadResult</i>"]
       vadResultCh --> EPDController["EPD Controller"]
       EPDController -->|EPD trigger| AudioRingBuffer
       AudioRingBuffer -->|speech segment| DecodeScheduler["DecodeScheduler"]
-      DecodeScheduler -->|UDS| STTPlugin["STT Inference Plugin"]
+      DecodeScheduler -->|"UDS</br>(Transcribe)"| STTPlugin
       STTPlugin --> decodeResultCh["<i>ch: decodeResult</i>"]
       decodeResultCh --> ResultAssembler["ResultAssembler"]
+      ResultAssembler -->|text| Client
+```
+
+Per-session pipeline — **streaming engine** (e.g. sherpa-onnx): VAD and ring buffer are bypassed; audio flows directly to the STT plugin which manages its own utterance boundaries:
+
+```mermaid
+flowchart TD
+      classDef external fill:#f5f5f5,stroke:#aaaaaa,stroke-width:1px,stroke-dasharray:5 5,color:#888888
+
+      Client["Client"]:::external
+      STTPlugin["STT Inference Plugin"]:::external
+
+      Client -->|audio| codecConvert["codecConvert"]
+      codecConvert --> pcmCh["<i>ch: pcm</i>"]
+      pcmCh --> frameAggregator["frameAggregator"]
+      frameAggregator -->|"UDS</br>(TranscribeStream)"| STTPlugin
+      STTPlugin --> streamResultCh["<i>ch: streamResult</i>"]
+      streamResultCh --> ResultAssembler["ResultAssembler"]
       ResultAssembler -->|text| Client
 ```
 
