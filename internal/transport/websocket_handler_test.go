@@ -275,6 +275,31 @@ func TestWebSocket_Resume_InvalidToken(t *testing.T) {
 	}
 }
 
+// TestWsStartToSessionConfig_EngineHint verifies that engine_hint in the JSON
+// start message is propagated to RecognitionConfig.EngineHint.
+func TestWsStartToSessionConfig_EngineHint(t *testing.T) {
+	m := &wsStartMessage{
+		Type:         "start",
+		LanguageCode: "ko",
+		EngineHint:   "whisper-mlx",
+	}
+	cfg := wsStartToSessionConfig(m)
+	got := cfg.GetRecognitionConfig().GetEngineHint()
+	if got != "whisper-mlx" {
+		t.Errorf("EngineHint = %q, want %q", got, "whisper-mlx")
+	}
+}
+
+// TestWsStartToSessionConfig_EngineHint_Empty verifies that omitting engine_hint
+// results in an empty string (no default substitution).
+func TestWsStartToSessionConfig_EngineHint_Empty(t *testing.T) {
+	m := &wsStartMessage{Type: "start", LanguageCode: "en"}
+	cfg := wsStartToSessionConfig(m)
+	if got := cfg.GetRecognitionConfig().GetEngineHint(); got != "" {
+		t.Errorf("EngineHint = %q, want empty", got)
+	}
+}
+
 // TestWebSocket_Resume_Success verifies that a valid resume reconnects to the
 // parked session and receives a session confirmed frame with the same token.
 func TestWebSocket_Resume_Success(t *testing.T) {

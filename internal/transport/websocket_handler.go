@@ -34,6 +34,7 @@ type wsStartMessage struct {
 	Task          string            `json:"task"`
 	LanguageCode  string            `json:"language_code"`
 	DecodeProfile string            `json:"decode_profile"`
+	EngineHint    string            `json:"engine_hint,omitempty"`
 	VADSilence    float64           `json:"vad_silence"`
 	VADThreshold  float64           `json:"vad_threshold"`
 	APIKey        string            `json:"api_key"`
@@ -535,6 +536,7 @@ func wsStartToSessionConfig(m *wsStartMessage) *clientpb.SessionConfig {
 			LanguageCode:  m.LanguageCode,
 			Task:          task,
 			DecodeProfile: decodeProfile,
+			EngineHint:    m.EngineHint,
 		},
 		Attributes: m.Attributes,
 	}
