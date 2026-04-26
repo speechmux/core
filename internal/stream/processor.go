@@ -103,7 +103,11 @@ func (p *StreamProcessor) ProcessSession(ctx context.Context, sess *session.Sess
 	)
 
 	if p.router != nil {
-		routedClient, routeErr := p.router.Route()
+		// PinByHint is the single routing call: it pins to the hinted endpoint if
+		// healthy, or falls back to Pin() → Route() when hint is empty or unmatched.
+		// Capabilities are then read from the pinned client, eliminating the race
+		// where Route() and PinByHint() could return different endpoints in a mixed pool.
+		routedClient, routeErr := p.router.PinByHint(sess.ID, sess.Info.EngineHint)
 		if routeErr == nil {
 			caps := routedClient.Capabilities()
 
@@ -115,13 +119,7 @@ func (p *StreamProcessor) ProcessSession(ctx context.Context, sess *session.Sess
 			}
 
 			if caps.GetStreamingMode() == inferencepb.StreamingMode_STREAMING_MODE_NATIVE {
-				// Pin the endpoint for the session lifetime. We already have caps from
-				// Route so we accept the small race — capability mismatch is a deployment
-				// error, not a runtime one.
-				pinnedClient, pinErr := p.router.PinByHint(sess.ID, sess.Info.EngineHint)
-				if pinErr != nil {
-					return sttErrors.New(sttErrors.ErrAllPluginsUnavailable, pinErr.Error()).ToGRPC()
-				}
+				// routedClient is already pinned; hold the pin for the session lifetime.
 				defer p.router.Unpin(sess.ID)
 
 				// Acquire a streaming session slot (blocks if at capacity).
@@ -136,17 +134,20 @@ func (p *StreamProcessor) ProcessSession(ctx context.Context, sess *session.Sess
 					SampleRate:   sampleRate,
 					LanguageCode: sess.Info.Language,
 				}
-				streamClient, err := plugin.NewInferenceStreamClient(ctx, pinnedClient.Endpoint(), streamCfg)
+				streamClient, err := plugin.NewInferenceStreamClient(ctx, routedClient.Endpoint(), streamCfg)
 				if err != nil {
 					return sttErrors.New(sttErrors.ErrStreamingEndpointLost, err.Error()).ToGRPC()
 				}
 				// streamClient is closed via engine.Close() in the defer below.
 
-				engineName := pinnedClient.Capabilities().GetEngineName()
+				engineName := routedClient.Capabilities().GetEngineName()
 				if engineName == "" {
 					engineName = cfg.Stream.EndpointingSource
 				}
 				engine = newStreamingDecodeEngine(streamClient, src, cfg.Stream, p.obs, engineName)
+			} else {
+				// Batch path: release pin immediately; batch uses per-request routing.
+				p.router.Unpin(sess.ID)
 			}
 		}
 	}

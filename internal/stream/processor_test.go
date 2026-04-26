@@ -3,6 +3,7 @@ package stream_test
 import (
 	"context"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -347,6 +348,128 @@ func TestProcessSession_AudioEndSignal(t *testing.T) {
 	case <-sess.ProcessingDone():
 	case <-time.After(time.Second):
 		t.Error("sess.ProcessingDone() not closed after pipeline terminated")
+	}
+}
+
+// ── streamingCapStub: STREAMING_MODE_NATIVE with endpointing=engine ───────────
+
+// streamingCapStub is a streaming inference server that records whether
+// TranscribeStream was called. It drains requests and returns cleanly on EOF.
+type streamingCapStub struct {
+	inferencepb.UnimplementedInferencePluginServer
+	called atomic.Bool
+}
+
+func (s *streamingCapStub) HealthCheck(_ context.Context, _ *emptypb.Empty) (*commonpb.PluginHealthStatus, error) {
+	return &commonpb.PluginHealthStatus{State: commonpb.PluginState_PLUGIN_STATE_READY}, nil
+}
+
+func (s *streamingCapStub) GetCapabilities(_ context.Context, _ *emptypb.Empty) (*inferencepb.InferenceCapabilities, error) {
+	return &inferencepb.InferenceCapabilities{
+		EngineName:            "streaming-stub",
+		StreamingMode:         inferencepb.StreamingMode_STREAMING_MODE_NATIVE,
+		EndpointingCapability: inferencepb.EndpointingCapability_ENDPOINTING_CAPABILITY_AUTO_FINALIZE,
+	}, nil
+}
+
+func (s *streamingCapStub) TranscribeStream(srv inferencepb.InferencePlugin_TranscribeStreamServer) error {
+	s.called.Store(true)
+	for {
+		_, err := srv.Recv()
+		if err != nil {
+			return nil
+		}
+	}
+}
+
+// TestProcessorEngineHintRouting verifies that when EngineHint matches a
+// streaming endpoint, the processor opens TranscribeStream on that endpoint.
+func TestProcessorEngineHintRouting(t *testing.T) {
+	stub := &streamingCapStub{}
+	sttEP := startInferenceServerWithID(t, "streaming-ep", stub)
+
+	router := plugin.NewPluginRouter("")
+	if err := router.Add(sttEP.ID(), sttEP.Socket(), 0); err != nil {
+		t.Fatalf("router.Add: %v", err)
+	}
+	scheduler := stream.NewDecodeScheduler(router, 4, 0, 5.0, nil)
+
+	cfgPtr := newTestConfig(0, 5.0)
+	cfg := *cfgPtr.Load()
+	cfg.Stream.EndpointingSource = "engine"
+	cfgPtr.Store(&cfg)
+
+	proc := stream.NewStreamProcessor(cfgPtr, nil, scheduler, router, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	sess := session.NewTestSession(ctx, "hint-routing-test")
+	sess.Info.EngineHint = "streaming-ep"
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- proc.ProcessSession(ctx, sess) }()
+
+	sendAudioFrames(ctx, t, sess, 5)
+	sess.SignalAudioEnd()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Errorf("ProcessSession: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ProcessSession did not return within 5 s")
+	}
+
+	if !stub.called.Load() {
+		t.Error("TranscribeStream was not called; engine_hint routing did not use streaming path")
+	}
+}
+
+// TestProcessorEngineHint_Nonexistent verifies that when EngineHint names an
+// endpoint that does not exist, routing falls back to a healthy endpoint and
+// ProcessSession completes without error.
+func TestProcessorEngineHint_Nonexistent(t *testing.T) {
+	stub := &streamingCapStub{}
+	sttEP := startInferenceServerWithID(t, "streaming-ep", stub)
+
+	router := plugin.NewPluginRouter("")
+	if err := router.Add(sttEP.ID(), sttEP.Socket(), 0); err != nil {
+		t.Fatalf("router.Add: %v", err)
+	}
+	scheduler := stream.NewDecodeScheduler(router, 4, 0, 5.0, nil)
+
+	cfgPtr2 := newTestConfig(0, 5.0)
+	cfg2 := *cfgPtr2.Load()
+	cfg2.Stream.EndpointingSource = "engine"
+	cfgPtr2.Store(&cfg2)
+
+	proc := stream.NewStreamProcessor(cfgPtr2, nil, scheduler, router, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	sess := session.NewTestSession(ctx, "hint-nonexistent-test")
+	sess.Info.EngineHint = "nonexistent"
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- proc.ProcessSession(ctx, sess) }()
+
+	sendAudioFrames(ctx, t, sess, 5)
+	sess.SignalAudioEnd()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Errorf("ProcessSession with nonexistent hint: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ProcessSession did not return within 5 s")
+	}
+
+	if !stub.called.Load() {
+		t.Error("TranscribeStream not called; expected fallback to available streaming endpoint")
 	}
 }
 
