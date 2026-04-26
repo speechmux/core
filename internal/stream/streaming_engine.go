@@ -271,6 +271,8 @@ func (e *streamingDecodeEngine) recvLoop(ctx context.Context) {
 		if err != nil {
 			if !isNormalShutdown(err) && err != io.EOF && !isStreamEnd(err) {
 				e.logger.Warn("streaming engine recv error", "error", err)
+				e.storeTerminalErr(sttErrors.New(sttErrors.ErrStreamingEndpointLost,
+					fmt.Sprintf("streaming plugin recv error: %s", err)))
 			}
 			return
 		}
@@ -354,6 +356,8 @@ func (e *streamingDecodeEngine) recvLoop(ctx context.Context) {
 				"code", p.Error.GetCode(),
 				"message", p.Error.GetMessage())
 			e.closeReason.Store("engine_error")
+			e.storeTerminalErr(sttErrors.New(sttErrors.ErrDecodeTaskFailed,
+				fmt.Sprintf("engine error response: %s", p.Error.GetMessage())))
 			e.cancel()
 			return
 		}
@@ -402,6 +406,8 @@ func (e *streamingDecodeEngine) engineWatchdog(ctx context.Context) {
 					if err := e.client.SendFinalize(); err != nil {
 						e.logger.Error("SendFinalize after max_utterance_sec failed", "error", err)
 						e.closeReason.Store("engine_error")
+						e.storeTerminalErr(sttErrors.New(sttErrors.ErrStreamingEndpointLost,
+							fmt.Sprintf("SendFinalize failed: %s", err)))
 						e.cancel()
 						return
 					}

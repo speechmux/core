@@ -18,6 +18,8 @@ import (
 	commonpb "github.com/speechmux/proto/gen/go/common/v1"
 	inferencepb "github.com/speechmux/proto/gen/go/inference/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
@@ -531,6 +533,20 @@ func TestResolveEndpointingSource_InvalidCombo_NativeNoAutoFinalize(t *testing.T
 	}
 }
 
+// forceCrashStub consumes the start config then immediately returns a gRPC
+// Internal error to trigger a non-EOF recv failure on the client side.
+type forceCrashStub struct {
+	inferencepb.UnimplementedInferencePluginServer
+}
+
+func (s *forceCrashStub) HealthCheck(_ context.Context, _ *emptypb.Empty) (*commonpb.PluginHealthStatus, error) {
+	return &commonpb.PluginHealthStatus{State: commonpb.PluginState_PLUGIN_STATE_READY}, nil
+}
+func (s *forceCrashStub) TranscribeStream(srv inferencepb.InferencePlugin_TranscribeStreamServer) error {
+	_, _ = srv.Recv() // consume start config
+	return status.Error(codes.Internal, "forced plugin crash")
+}
+
 func TestStreamingEngine_LagWatchdogSetsTerminalErr(t *testing.T) {
 	ep := startStubServer(t, &hangingStub{})
 	cfg := config.StreamConfig{EngineResponseTimeoutSec: 0.1}
@@ -557,6 +573,64 @@ func TestStreamingEngine_LagWatchdogSetsTerminalErr(t *testing.T) {
 			}
 		case <-timeout:
 			t.Fatal("lag watchdog did not fire within 3 s")
+		}
+	}
+}
+
+func TestStreamingEngine_ErrorResponseSetsTerminalErr(t *testing.T) {
+	ep := startStubServer(t, &errorResponseStub{})
+	e := buildEngine(t, ep, endpointingCore, config.StreamConfig{})
+	startEngine(t, e)
+
+	timeout := time.After(3 * time.Second)
+	for {
+		select {
+		case _, ok := <-e.Results():
+			if !ok {
+				terr := e.TerminalErr()
+				if terr == nil {
+					t.Fatal("TerminalErr is nil after engine error response")
+				}
+				var sttErr *sttErrors.STTError
+				if !errors.As(terr, &sttErr) {
+					t.Fatalf("TerminalErr is not STTError: %T %v", terr, terr)
+				}
+				if sttErr.Code() != sttErrors.ErrDecodeTaskFailed {
+					t.Fatalf("code = %v, want ErrDecodeTaskFailed", sttErr.Code())
+				}
+				return
+			}
+		case <-timeout:
+			t.Fatal("Results channel not closed within 3 s after StreamError response")
+		}
+	}
+}
+
+func TestStreamingEngine_RecvErrorSetsTerminalErr(t *testing.T) {
+	ep := startStubServer(t, &forceCrashStub{})
+	e := buildEngine(t, ep, endpointingCore, config.StreamConfig{})
+	startEngine(t, e)
+
+	timeout := time.After(3 * time.Second)
+	for {
+		select {
+		case _, ok := <-e.Results():
+			if !ok {
+				terr := e.TerminalErr()
+				if terr == nil {
+					t.Fatal("TerminalErr is nil after plugin recv error")
+				}
+				var sttErr *sttErrors.STTError
+				if !errors.As(terr, &sttErr) {
+					t.Fatalf("TerminalErr is not STTError: %T %v", terr, terr)
+				}
+				if sttErr.Code() != sttErrors.ErrStreamingEndpointLost {
+					t.Fatalf("code = %v, want ErrStreamingEndpointLost", sttErr.Code())
+				}
+				return
+			}
+		case <-timeout:
+			t.Fatal("Results channel not closed within 3 s after plugin crash")
 		}
 	}
 }
