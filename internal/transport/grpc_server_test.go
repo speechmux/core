@@ -210,6 +210,77 @@ func TestStreamingRecognize_SessionCreated(t *testing.T) {
 	_ = stream.CloseSend()
 }
 
+// TestStreamingRecognize_SessionCreated_NegotiatedFields verifies that the
+// SessionCreated response includes NegotiatedAudio and NegotiatedRecognition
+// populated from the session config sent by the client.
+func TestStreamingRecognize_SessionCreated_NegotiatedFields(t *testing.T) {
+	sm := newTestSessionManager()
+	client := startTestGRPCServer(t, sm, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := client.StreamingRecognize(ctx)
+	if err != nil {
+		t.Fatalf("StreamingRecognize: %v", err)
+	}
+
+	if err := stream.Send(&clientpb.StreamingRecognizeRequest{
+		StreamingRequest: &clientpb.StreamingRecognizeRequest_SessionConfig{
+			SessionConfig: &clientpb.SessionConfig{
+				SessionId: "sess-negotiated",
+				RecognitionConfig: &clientpb.RecognitionConfig{
+					LanguageCode:  "ko",
+					Task:          clientpb.Task_TASK_TRANSLATE,
+					DecodeProfile: clientpb.DecodeProfile_DECODE_PROFILE_ACCURATE,
+				},
+				AudioConfig: &clientpb.AudioConfig{
+					SampleRate: 16000,
+					Encoding:   clientpb.AudioEncoding_AUDIO_ENCODING_PCM_S16LE,
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	resp, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv: %v", err)
+	}
+	sc := resp.GetSessionCreated()
+	if sc == nil {
+		t.Fatalf("expected SessionCreated, got %T", resp.GetStreamingResponse())
+	}
+
+	// NegotiatedAudio
+	if sc.GetNegotiatedAudio() == nil {
+		t.Fatal("NegotiatedAudio is nil")
+	}
+	if sc.GetNegotiatedAudio().GetSampleRate() != 16000 {
+		t.Errorf("NegotiatedAudio.SampleRate = %d, want 16000", sc.GetNegotiatedAudio().GetSampleRate())
+	}
+	if sc.GetNegotiatedAudio().GetEncoding() != clientpb.AudioEncoding_AUDIO_ENCODING_PCM_S16LE {
+		t.Errorf("NegotiatedAudio.Encoding = %v, want PCM_S16LE", sc.GetNegotiatedAudio().GetEncoding())
+	}
+
+	// NegotiatedRecognition
+	if sc.GetNegotiatedRecognition() == nil {
+		t.Fatal("NegotiatedRecognition is nil")
+	}
+	if sc.GetNegotiatedRecognition().GetLanguageCode() != "ko" {
+		t.Errorf("NegotiatedRecognition.LanguageCode = %q, want ko", sc.GetNegotiatedRecognition().GetLanguageCode())
+	}
+	if sc.GetNegotiatedRecognition().GetTask() != clientpb.Task_TASK_TRANSLATE {
+		t.Errorf("NegotiatedRecognition.Task = %v, want TASK_TRANSLATE", sc.GetNegotiatedRecognition().GetTask())
+	}
+	if sc.GetNegotiatedRecognition().GetDecodeProfile() != clientpb.DecodeProfile_DECODE_PROFILE_ACCURATE {
+		t.Errorf("NegotiatedRecognition.DecodeProfile = %v, want DECODE_PROFILE_ACCURATE", sc.GetNegotiatedRecognition().GetDecodeProfile())
+	}
+
+	_ = stream.CloseSend()
+}
+
 // TestStreamingRecognize_NilProcessor verifies that when no processor is set
 // audio is silently discarded and the stream closes cleanly on CloseSend.
 func TestStreamingRecognize_NilProcessor(t *testing.T) {

@@ -118,6 +118,15 @@ func (s *GRPCServer) StreamingRecognize(stream clientpb.STTService_StreamingReco
 					SilenceDuration: sess.Info.VADSilence,
 					Threshold:       sess.Info.VADThreshold,
 				},
+				NegotiatedAudio: &clientpb.AudioConfig{
+					SampleRate: sess.Info.SourceSampleRate,
+					Encoding:   sess.Info.Encoding,
+				},
+				NegotiatedRecognition: &clientpb.RecognitionConfig{
+					LanguageCode:  sess.Info.Language,
+					Task:          sessionTaskProto(sess.Info.Task),
+					DecodeProfile: sessionDecodeProfileProto(sess.Info.DecodeProfile),
+				},
 			},
 		},
 	}); err != nil {
@@ -246,6 +255,22 @@ func extractPeerIP(ctx context.Context) string {
 		return addr[:idx]
 	}
 	return addr
+}
+
+// sessionTaskProto converts the SessionInfo.Task string to the proto Task enum.
+func sessionTaskProto(task string) clientpb.Task {
+	if task == "translate" {
+		return clientpb.Task_TASK_TRANSLATE
+	}
+	return clientpb.Task_TASK_TRANSCRIBE
+}
+
+// sessionDecodeProfileProto converts SessionInfo.DecodeProfile to the proto enum.
+func sessionDecodeProfileProto(profile string) clientpb.DecodeProfile {
+	if profile == "accurate" {
+		return clientpb.DecodeProfile_DECODE_PROFILE_ACCURATE
+	}
+	return clientpb.DecodeProfile_DECODE_PROFILE_REALTIME
 }
 
 // extractMetadata flattens gRPC incoming metadata into a lowercase string map.
