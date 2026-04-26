@@ -17,6 +17,7 @@ import (
 	"nhooyr.io/websocket"
 
 	"github.com/speechmux/core/internal/codec"
+	sttErrors "github.com/speechmux/core/internal/errors"
 	"github.com/speechmux/core/internal/session"
 	"github.com/speechmux/core/internal/storage"
 	clientpb "github.com/speechmux/proto/gen/go/client/v1"
@@ -328,12 +329,16 @@ func (h *WebSocketHandler) runSessionLoop(
 
 	// Start stream processor for new sessions only (resumed sessions already
 	// have a running ProcessSession goroutine that survived the park window).
+	// PipelineExitCh carries the return value so sendLoop can serialise errors
+	// to the client before the WebSocket closes.
 	if startProcessor && h.processor != nil {
 		go func() {
-			if procErr := h.processor.ProcessSession(sess.Context(), sess); procErr != nil {
+			procErr := h.processor.ProcessSession(sess.Context(), sess)
+			if procErr != nil {
 				slog.Warn("websocket stream processor error",
 					"session_id", sess.ID, "err", procErr)
 			}
+			sess.SignalPipelineExit(procErr)
 		}()
 	}
 
@@ -368,11 +373,19 @@ func (h *WebSocketHandler) runSessionLoop(
 		slog.Debug("websocket session ended with error", "session_id", sess.ID, "err", waitErr)
 	}
 
-	if cleanEnd || h.resumeTimeout == 0 {
+	// If the pipeline has already exited (ProcessingDone closed), always close
+	// the session — never park. Parking is only meaningful when the pipeline is
+	// still running and a client reconnect can resume it.
+	select {
+	case <-sess.ProcessingDone():
 		h.sessions.CloseSession(sess.ID)
-	} else {
-		// Unexpected disconnect: park the session and start the resume timer.
-		h.sessions.ParkSession(sess.ID, h.resumeTimeout)
+	default:
+		if cleanEnd || h.resumeTimeout == 0 {
+			h.sessions.CloseSession(sess.ID)
+		} else {
+			// Unexpected disconnect: park the session and start the resume timer.
+			h.sessions.ParkSession(sess.ID, h.resumeTimeout)
+		}
 	}
 }
 
@@ -425,6 +438,8 @@ func (h *WebSocketHandler) recvLoop(
 				return ctx.Err()
 			case <-sess.Context().Done():
 				return nil
+			case <-sess.PipelineExitCh:
+				return nil
 			}
 
 		case websocket.MessageText:
@@ -468,6 +483,15 @@ func (h *WebSocketHandler) sendLoop(
 			if err := writeWSJSON(ctx, conn, wsResult(result)); err != nil {
 				return fmt.Errorf("send result: %w", err)
 			}
+
+		case pipelineErr, open := <-sess.PipelineExitCh:
+			if open && pipelineErr != nil {
+				spec := sttErrors.ToErrorSpec(pipelineErr)
+				_ = writeWSError(ctx, conn, spec.Code, spec.Message)
+				// Return non-nil so the errgroup cancels gCtx, unblocking recvLoop.
+				return fmt.Errorf("pipeline: %w", pipelineErr)
+			}
+			return nil
 
 		case <-ctx.Done():
 			// WebSocket error or HTTP disconnect — no "done" frame sent.

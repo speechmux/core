@@ -3,6 +3,7 @@
 package errors
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -182,3 +183,29 @@ func (e *STTError) ToGRPC() error {
 
 // HTTPStatus returns the HTTP status code.
 func (e *STTError) HTTPStatus() int { return e.spec.HTTPStatus }
+
+// WireError holds the fields needed to serialise a pipeline error to the client —
+// as a gRPC StreamError frame or a WebSocket {"type":"error"} message.
+type WireError struct {
+	Code      string
+	Message   string
+	Retryable bool
+}
+
+// ToErrorSpec converts a Go error into a WireError for transmission to clients.
+// If err wraps an *STTError the registered code, message, and retryability are
+// used. All other errors fall back to ErrStreamProcessingInternal (ERR3002).
+func ToErrorSpec(err error) WireError {
+	var sttErr *STTError
+	if errors.As(err, &sttErr) {
+		retryable := sttErr.spec.GRPCCode == codes.Unavailable ||
+			sttErr.spec.GRPCCode == codes.ResourceExhausted
+		return WireError{
+			Code:      string(sttErr.spec.Code),
+			Message:   sttErr.spec.Message,
+			Retryable: retryable,
+		}
+	}
+	fb := Spec(ErrStreamProcessingInternal)
+	return WireError{Code: string(fb.Code), Message: fb.Message}
+}

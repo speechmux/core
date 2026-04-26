@@ -61,6 +61,8 @@ type Session struct {
 
 	// audioEndOnce ensures AudioInCh is closed exactly once.
 	audioEndOnce sync.Once
+	// pipelineExitOnce ensures PipelineExitCh is signalled exactly once.
+	pipelineExitOnce sync.Once
 	// processingDone is closed when ProcessSession completes.
 	processingDone chan struct{}
 
@@ -70,6 +72,11 @@ type Session struct {
 	// ResultCh receives recognition results from the decode pipeline.
 	// The gRPC handler reads from this channel and streams results to the client.
 	ResultCh chan *clientpb.RecognitionResult
+
+	// PipelineExitCh receives the ProcessSession return value when the pipeline
+	// goroutine exits. Buffered(1); transport recv/send loops select on it to
+	// detect pipeline shutdown and serialise errors to the client.
+	PipelineExitCh chan error
 
 	// resumeToken is a secret used to authenticate WebSocket reconnects.
 	// Generated once at session creation; never changes.
@@ -95,6 +102,7 @@ func newSession(ctx context.Context, id string, info *SessionInfo) *Session {
 		processingDone: make(chan struct{}),
 		AudioInCh:      make(chan []byte, 64),
 		ResultCh:       make(chan *clientpb.RecognitionResult, 16),
+		PipelineExitCh: make(chan error, 1),
 		resumeToken:    generateResumeToken(),
 	}
 	s.lastActivity.Store(time.Now())
@@ -131,6 +139,20 @@ func (s *Session) Done() <-chan struct{} {
 // Context returns the session's context.
 func (s *Session) Context() context.Context {
 	return s.ctx
+}
+
+// SignalPipelineExit sends err to PipelineExitCh and closes it.
+// Safe to call from multiple goroutines; only the first call has effect.
+// Must be called BEFORE closing ResultCh so the transport can serialise the
+// error before seeing the channel close.
+func (s *Session) SignalPipelineExit(err error) {
+	s.pipelineExitOnce.Do(func() {
+		select {
+		case s.PipelineExitCh <- err:
+		default:
+		}
+		close(s.PipelineExitCh)
+	})
 }
 
 // SignalAudioEnd closes AudioInCh exactly once, signalling end-of-audio to

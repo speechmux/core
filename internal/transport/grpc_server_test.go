@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/speechmux/core/internal/config"
+	sttErrors "github.com/speechmux/core/internal/errors"
 	"github.com/speechmux/core/internal/session"
 	clientpb "github.com/speechmux/proto/gen/go/client/v1"
 	"google.golang.org/grpc"
@@ -484,4 +485,78 @@ func TestStreamingRecognize_MaxSessionsExceeded(t *testing.T) {
 	}
 
 	_ = stream1.CloseSend()
+}
+
+// ── pipeline error serialisation ──────────────────────────────────────────────
+
+// errorProcessor returns a fixed error from ProcessSession without touching
+// ResultCh. The transport goroutine is responsible for closing PipelineExitCh.
+type errorProcessor struct {
+	err error
+}
+
+func (p *errorProcessor) ProcessSession(_ context.Context, sess *session.Session) error {
+	for range sess.AudioInCh {
+	}
+	// Signal exit BEFORE closing ResultCh so the transport sees the error first.
+	sess.SignalPipelineExit(p.err)
+	close(sess.ResultCh)
+	sess.MarkProcessingDone()
+	return p.err
+}
+
+// TestGRPC_PipelineError_StreamError verifies that when ProcessSession returns
+// an *STTError the gRPC client receives a StreamError frame before EOF.
+func TestGRPC_PipelineError_StreamError(t *testing.T) {
+	sm := newTestSessionManager()
+	proc := &errorProcessor{
+		err: sttErrors.New(sttErrors.ErrDecodeTimeout, "test timeout"),
+	}
+	client := startTestGRPCServer(t, sm, proc)
+
+	stream, err := client.StreamingRecognize(context.Background())
+	if err != nil {
+		t.Fatalf("StreamingRecognize: %v", err)
+	}
+
+	if err := stream.Send(sessionConfigMsg("sess-pipe-err", "en")); err != nil {
+		t.Fatalf("Send session_config: %v", err)
+	}
+
+	// Read session_created.
+	first, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv session_created: %v", err)
+	}
+	if first.GetSessionCreated() == nil {
+		t.Fatalf("expected session_created, got %T", first.GetStreamingResponse())
+	}
+
+	// Signal end-of-audio so the processor drains and returns its error.
+	if err := stream.Send(isLastMsg()); err != nil {
+		t.Fatalf("Send is_last: %v", err)
+	}
+	_ = stream.CloseSend()
+
+	// Expect a StreamError frame before EOF.
+	var gotStreamErr *clientpb.StreamError
+	for {
+		msg, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			t.Fatalf("Recv: %v", recvErr)
+		}
+		if se := msg.GetError(); se != nil {
+			gotStreamErr = se
+		}
+	}
+
+	if gotStreamErr == nil {
+		t.Fatal("expected StreamError frame before EOF, got none")
+	}
+	if gotStreamErr.GetErrorCode() != string(sttErrors.ErrDecodeTimeout) {
+		t.Errorf("error_code = %q, want %q", gotStreamErr.GetErrorCode(), sttErrors.ErrDecodeTimeout)
+	}
 }

@@ -12,6 +12,7 @@ import (
 	"nhooyr.io/websocket"
 
 	"github.com/speechmux/core/internal/config"
+	sttErrors "github.com/speechmux/core/internal/errors"
 	"github.com/speechmux/core/internal/session"
 )
 
@@ -272,6 +273,55 @@ func TestWebSocket_Resume_InvalidToken(t *testing.T) {
 	}
 	if errMsg.Code != "ERR1019" {
 		t.Errorf("code = %q, want ERR1019", errMsg.Code)
+	}
+}
+
+// wsErrProcessor is a SessionProcessor that returns a fixed error.
+type wsErrProcessor struct{ err error }
+
+func (p *wsErrProcessor) ProcessSession(_ context.Context, sess *session.Session) error {
+	for range sess.AudioInCh {
+	}
+	sess.SignalPipelineExit(p.err)
+	close(sess.ResultCh)
+	sess.MarkProcessingDone()
+	return p.err
+}
+
+// TestWebSocket_PipelineError_ErrorFrame verifies that when ProcessSession returns
+// an *STTError the WebSocket client receives {"type":"error","code":"ERR2001"}.
+func TestWebSocket_PipelineError_ErrorFrame(t *testing.T) {
+	sm := session.NewManager(wsTestConfig(), nil)
+	proc := &wsErrProcessor{
+		err: sttErrors.New(sttErrors.ErrDecodeTimeout, "test timeout"),
+	}
+	h := NewWebSocketHandler(0, sm, proc, nil, nil, nil, 0, nil)
+	srv := wsTestServer(h)
+	defer srv.Close()
+
+	conn := dialWS(t, srv)
+	defer conn.CloseNow()
+
+	writeJSON(t, conn, startMsg("sess-pipe-err-ws"))
+
+	// session confirmed
+	var sessMsg wsSessionMessage
+	readJSON(t, conn, &sessMsg)
+	if sessMsg.Type != "session" {
+		t.Fatalf("expected session, got %q", sessMsg.Type)
+	}
+
+	// Signal end-of-audio so the processor returns its error.
+	writeJSON(t, conn, wsControlMessage{Type: "end"})
+
+	// Next frame must be {"type":"error","code":"ERR2001"}.
+	var errMsg wsErrorMessage
+	readJSON(t, conn, &errMsg)
+	if errMsg.Type != "error" {
+		t.Errorf("type = %q, want error", errMsg.Type)
+	}
+	if errMsg.Code != string(sttErrors.ErrDecodeTimeout) {
+		t.Errorf("code = %q, want %q", errMsg.Code, sttErrors.ErrDecodeTimeout)
 	}
 }
 

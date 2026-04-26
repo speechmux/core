@@ -127,11 +127,18 @@ func (s *GRPCServer) StreamingRecognize(stream clientpb.STTService_StreamingReco
 
 	// 4. Start stream processor (if configured) in a background goroutine.
 	// It reads from sess.AudioInCh for the lifetime of the session.
+	// PipelineExitCh carries the return value so the result forwarder can
+	// serialise errors to the client before the stream closes.
 	if s.processor != nil {
 		go func() {
-			if err := s.processor.ProcessSession(sess.Context(), sess); err != nil {
-				slog.Warn("stream processor error", "session_id", sess.ID, "error", err)
+			procErr := s.processor.ProcessSession(sess.Context(), sess)
+			if procErr != nil {
+				slog.Warn("stream processor error", "session_id", sess.ID, "error", procErr)
 			}
+			// SignalPipelineExit is idempotent; processor.go calls it first
+			// (before closing ResultCh) when it uses the named-return pattern.
+			// This call is a safety net for stub processors used in tests.
+			sess.SignalPipelineExit(procErr)
 		}()
 	}
 
@@ -154,6 +161,20 @@ func (s *GRPCServer) StreamingRecognize(stream clientpb.STTService_StreamingReco
 					slog.Warn("send result failed", "session_id", sess.ID, "error", err)
 					return
 				}
+			case pipelineErr, open := <-sess.PipelineExitCh:
+				if open && pipelineErr != nil {
+					spec := sttErrors.ToErrorSpec(pipelineErr)
+					_ = stream.Send(&clientpb.StreamingRecognizeResponse{
+						StreamingResponse: &clientpb.StreamingRecognizeResponse_Error{
+							Error: &clientpb.StreamError{
+								ErrorCode: spec.Code,
+								Message:   spec.Message,
+								Retryable: spec.Retryable,
+							},
+						},
+					})
+				}
+				return
 			case <-sess.Context().Done():
 				// Drain any results already buffered before exiting.
 				for {
@@ -189,6 +210,8 @@ recvLoop:
 				select {
 				case sess.AudioInCh <- v.Audio:
 				case <-sess.Context().Done():
+					break recvLoop
+				case <-sess.PipelineExitCh:
 					break recvLoop
 				}
 			}

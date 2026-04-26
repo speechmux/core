@@ -76,7 +76,7 @@ func (p *StreamProcessor) selectVADEndpoint() *plugin.Endpoint {
 
 // ProcessSession runs the full audio pipeline for a session until ctx is
 // cancelled or a fatal error occurs.
-func (p *StreamProcessor) ProcessSession(ctx context.Context, sess *session.Session) error {
+func (p *StreamProcessor) ProcessSession(ctx context.Context, sess *session.Session) (retErr error) {
 	ctx, span := otel.Tracer("speechmux/core/stream").Start(ctx, "session.pipeline")
 	span.SetAttributes(
 		attribute.String("session.id", sess.ID),
@@ -192,6 +192,9 @@ func (p *StreamProcessor) ProcessSession(ctx context.Context, sess *session.Sess
 	// vadSendLoop end-of-stream for src=engine).
 	defer func() {
 		_ = engine.Close()
+		// Signal exit (retErr may be non-nil) BEFORE closing ResultCh so that
+		// the transport's result forwarder sees the error before the channel close.
+		sess.SignalPipelineExit(retErr)
 		close(sess.ResultCh)
 		sess.MarkProcessingDone()
 	}()
