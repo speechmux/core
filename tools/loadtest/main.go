@@ -47,6 +47,7 @@ type runConfig struct {
 	rampUpSec   int
 	chunkMs     int
 	lang        string
+	engineHint  string
 	jsonOut     bool
 }
 
@@ -107,10 +108,12 @@ func main() {
 	flag.IntVar(&cfg.sessions, "sessions", 10, "number of concurrent sessions")
 	flag.IntVar(&cfg.sessionSec, "session-sec", 10, "audio duration per session (seconds); overridden by --duration")
 	flag.DurationVar(&cfg.duration, "duration", 0, "audio duration per session (e.g. 5m, 30s); overrides --session-sec")
-	flag.StringVar(&cfg.scenario, "scenario", "steady", "test scenario: steady | rampup | spike")
+	flag.StringVar(&cfg.scenario, "scenario", "steady", "test scenario: steady | rampup | spike | streaming")
 	flag.IntVar(&cfg.rampUpSec, "ramp-up", 5, "ramp-up period in seconds (scenario=rampup only)")
 	flag.IntVar(&cfg.chunkMs, "chunk-ms", 20, "audio chunk size in milliseconds")
 	flag.StringVar(&cfg.lang, "lang", "ko", "BCP-47 language code")
+	flag.StringVar(&cfg.engineHint, "engine-hint", "",
+		"endpoint ID hint for all sessions (e.g. 'sherpa-onnx'); use with --scenario streaming")
 	flag.BoolVar(&cfg.jsonOut, "json", false, "output JSON report only (no progress)")
 	flag.Parse()
 
@@ -191,6 +194,10 @@ func runScenario(cfg *runConfig, conn *grpc.ClientConn) []sessionResult {
 	case "streaming":
 		// Same launch pattern as steady; per-session streaming metrics are
 		// collected in runSession and aggregated in buildReport.
+		if cfg.engineHint == "" && !cfg.jsonOut {
+			fmt.Fprintln(os.Stderr,
+				"WARNING: --scenario streaming without --engine-hint may hit batch endpoints")
+		}
 		for i := 0; i < cfg.sessions; i++ {
 			launch(0)
 		}
@@ -231,6 +238,7 @@ func runSession(cfg *runConfig, conn *grpc.ClientConn, id string) sessionResult 
 				SessionId: id,
 				RecognitionConfig: &clientpb.RecognitionConfig{
 					LanguageCode: cfg.lang,
+					EngineHint:   cfg.engineHint,
 				},
 			},
 		},
