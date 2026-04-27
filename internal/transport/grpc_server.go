@@ -227,7 +227,10 @@ recvLoop:
 		case *clientpb.StreamingRecognizeRequest_Signal:
 			if v.Signal.GetIsLast() {
 				// Client has sent all audio — signal the pipeline to flush.
+				// Break immediately: AudioInCh is now closed, so any subsequent
+				// audio send case in the select above would panic.
 				sess.SignalAudioEnd()
+				break recvLoop
 			}
 		}
 	}

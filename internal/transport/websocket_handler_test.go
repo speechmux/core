@@ -350,6 +350,58 @@ func TestWsStartToSessionConfig_EngineHint_Empty(t *testing.T) {
 	}
 }
 
+// TestWebSocket_PipelineExit_RecvLoopExits verifies that after the pipeline signals
+// an error, the server-side recvLoop exits and the connection is closed within
+// 500ms, preventing a goroutine leak.
+func TestWebSocket_PipelineExit_RecvLoopExits(t *testing.T) {
+	sm := session.NewManager(wsTestConfig(), nil)
+	proc := &wsErrProcessor{err: sttErrors.New(sttErrors.ErrDecodeTimeout, "test timeout")}
+	h := NewWebSocketHandler(0, sm, proc, nil, nil, nil, 0, nil)
+	srv := wsTestServer(h)
+	defer srv.Close()
+
+	conn := dialWS(t, srv)
+	defer conn.CloseNow()
+
+	writeJSON(t, conn, startMsg("sess-leak-ws"))
+
+	var sessMsg wsSessionMessage
+	readJSON(t, conn, &sessMsg)
+	if sessMsg.Type != "session" {
+		t.Fatalf("expected session, got %q", sessMsg.Type)
+	}
+
+	// Signal end-of-audio: recvLoop calls SignalAudioEnd and returns nil.
+	// The processor drains AudioInCh and signals PipelineExitCh with an error.
+	writeJSON(t, conn, wsControlMessage{Type: "end"})
+
+	// sendLoop receives PipelineExitCh, sends the error frame, and returns
+	// non-nil — cancelling gCtx so that recvLoop (if still running) exits too.
+	var errMsg wsErrorMessage
+	readJSON(t, conn, &errMsg)
+	if errMsg.Type != "error" {
+		t.Fatalf("expected error frame, got %q", errMsg.Type)
+	}
+
+	// sendLoop returned non-nil → errgroup returned → handler returned.
+	// nhooyr.io/websocket sends a close frame when the handler returns.
+	// The next conn.Read() must return an error (close or disconnect) within 500ms.
+	connClosed := make(chan struct{})
+	go func() {
+		defer close(connClosed)
+		readCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_, _, _ = conn.Read(readCtx) // any error (close frame / EOF) satisfies the check
+	}()
+
+	select {
+	case <-connClosed:
+		// connection closed by server as expected
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("server did not close connection within 500ms after pipeline error")
+	}
+}
+
 // TestWebSocket_Resume_Success verifies that a valid resume reconnects to the
 // parked session and receives a session confirmed frame with the same token.
 func TestWebSocket_Resume_Success(t *testing.T) {

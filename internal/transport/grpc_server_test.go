@@ -631,3 +631,69 @@ func TestGRPC_PipelineError_StreamError(t *testing.T) {
 		t.Errorf("error_code = %q, want %q", gotStreamErr.GetErrorCode(), sttErrors.ErrDecodeTimeout)
 	}
 }
+
+// TestGRPC_PipelineExit_RecvLoopExits verifies that after the pipeline signals
+// an error, the server-side recvLoop exits within 500ms even when the client
+// has not called CloseSend, preventing a goroutine leak.
+func TestGRPC_PipelineExit_RecvLoopExits(t *testing.T) {
+	sm := newTestSessionManager()
+	proc := &errorProcessor{err: sttErrors.New(sttErrors.ErrDecodeTimeout, "test timeout")}
+	client := startTestGRPCServer(t, sm, proc)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := client.StreamingRecognize(ctx)
+	if err != nil {
+		t.Fatalf("StreamingRecognize: %v", err)
+	}
+
+	if err := stream.Send(sessionConfigMsg("sess-leak-grpc", "en")); err != nil {
+		t.Fatalf("Send session_config: %v", err)
+	}
+	first, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv session_created: %v", err)
+	}
+	if first.GetSessionCreated() == nil {
+		t.Fatalf("expected session_created, got %T", first.GetStreamingResponse())
+	}
+
+	// Signal end-of-audio without CloseSend: the server recvLoop stays alive,
+	// blocked on stream.Recv(), until something unblocks it.
+	if err := stream.Send(isLastMsg()); err != nil {
+		t.Fatalf("Send is_last: %v", err)
+	}
+
+	// Wait for the StreamError frame (pipeline drains AudioInCh, exits, signals PipelineExitCh).
+	for {
+		msg, recvErr := stream.Recv()
+		if recvErr != nil {
+			t.Fatalf("unexpected Recv error before StreamError: %v", recvErr)
+		}
+		if msg.GetError() != nil {
+			break
+		}
+	}
+
+	// recvLoop broke at is_last (AudioInCh closed); the handler is now waiting for
+	// resultsDone. The result forwarder sends StreamError then closes resultsDone,
+	// so the handler returns and the stream closes.
+	// Verify by reading until the stream closes within 500ms.
+	streamClosed := make(chan struct{})
+	go func() {
+		defer close(streamClosed)
+		for {
+			if _, err := stream.Recv(); err != nil {
+				return
+			}
+		}
+	}()
+
+	select {
+	case <-streamClosed:
+		// recvLoop exited; stream closed as expected.
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("server recvLoop did not exit within 500ms after pipeline error")
+	}
+}
