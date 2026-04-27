@@ -115,6 +115,7 @@ func (p *StreamProcessor) ProcessSession(ctx context.Context, sess *session.Sess
 			var capErr error
 			src, capErr = resolveEndpointingSource(cfg.Stream.EndpointingSource, caps)
 			if capErr != nil {
+				p.router.Unpin(sess.ID)
 				return capErr.(*sttErrors.STTError).ToGRPC()
 			}
 
