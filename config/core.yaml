@@ -29,7 +29,7 @@ stream:
   buffer_overlap_sec: 0.5           # Overlap (seconds) kept at utterance start to avoid clipping.
   emit_final_on_vad: false          # If true, emit final result immediately on EPD without waiting for STT.
   vad_frame_timeout_sec: 3          # Seconds without a VAD frame before the stream is considered hung and
-                                    # aborted with ERR2003. Increase on high-latency plugin connections.
+                                    # aborted with ERR3004. Increase on high-latency plugin connections.
   epd_heartbeat_interval_sec: 30    # Interval (seconds) between EPD heartbeat log lines when no speech
                                     # is detected. Set to 0 to disable. Per-frame logs are DEBUG only.
   vad_watermark_lag_threshold_sec: 5.0  # Seconds of lag between the latest buffered audio and the VAD
