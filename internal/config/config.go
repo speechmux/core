@@ -83,7 +83,6 @@ type StreamConfig struct {
 
 	// Streaming STT fields.
 	EndpointingSource           string  `yaml:"endpointing_source"`             // "core" | "engine"; "hybrid" rejected at load
-	StreamingSttSendTimeoutSec  float64 `yaml:"streaming_stt_send_timeout_sec"` // per-frame send timeout (seconds); 0 = disable
 	StreamingFinalizeTimeoutSec float64 `yaml:"streaming_finalize_timeout_sec"` // wait for is_final after FINALIZE_UTTERANCE (seconds)
 	EngineResponseTimeoutSec    float64 `yaml:"engine_response_timeout_sec"`    // lag watchdog for endpointing_source=engine (seconds); 0 = disable
 	MaxUtteranceSec             float64 `yaml:"max_utterance_sec"`              // force FINALIZE_UTTERANCE if engine emits no is_final (seconds); 0 = disable
@@ -266,9 +265,6 @@ func (c *Config) Defaults() {
 	}
 	if c.Stream.EndpointingSource == "" {
 		c.Stream.EndpointingSource = "core"
-	}
-	if c.Stream.StreamingSttSendTimeoutSec == 0 {
-		c.Stream.StreamingSttSendTimeoutSec = 1.0
 	}
 	if c.Stream.StreamingFinalizeTimeoutSec == 0 {
 		c.Stream.StreamingFinalizeTimeoutSec = 3.0
