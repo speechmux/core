@@ -576,6 +576,90 @@ func (p *errorProcessor) ProcessSession(_ context.Context, sess *session.Session
 	return p.err
 }
 
+// realOrderCleanProcessor mirrors the processor.go defer ordering:
+// SignalPipelineExit(nil) fires before close(ResultCh). Used to verify
+// the result-forwarder drain loop on the gRPC path.
+type realOrderCleanProcessor struct {
+	result *clientpb.RecognitionResult // nil = send nothing
+}
+
+func (p *realOrderCleanProcessor) ProcessSession(_ context.Context, sess *session.Session) error {
+	for range sess.AudioInCh {
+	}
+	if p.result != nil {
+		sess.ResultCh <- p.result
+	}
+	sess.SignalPipelineExit(nil) // fires before close, matching real processor.go ordering
+	close(sess.ResultCh)
+	sess.MarkProcessingDone()
+	return nil
+}
+
+// TestGRPC_CleanExit_ResultBeforeEOF verifies that when PipelineExitCh fires
+// before ResultCh closes (the real processor.go defer ordering), the result
+// forwarder still drains ResultCh and delivers buffered results to the client
+// before the stream reaches EOF. Guards against regression of the clean-exit
+// drain fix applied to the gRPC result-forwarder goroutine.
+func TestGRPC_CleanExit_ResultBeforeEOF(t *testing.T) {
+	sm := newTestSessionManager()
+	proc := &realOrderCleanProcessor{
+		result: &clientpb.RecognitionResult{
+			IsFinal: true,
+			Text:    "clean exit grpc",
+		},
+	}
+	client := startTestGRPCServer(t, sm, proc)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := client.StreamingRecognize(ctx)
+	if err != nil {
+		t.Fatalf("StreamingRecognize: %v", err)
+	}
+	if err := stream.Send(sessionConfigMsg("sess-clean-grpc", "en")); err != nil {
+		t.Fatalf("Send session_config: %v", err)
+	}
+	first, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv session_created: %v", err)
+	}
+	if first.GetSessionCreated() == nil {
+		t.Fatalf("expected session_created, got %T", first.GetStreamingResponse())
+	}
+
+	// Drain AudioInCh so the processor can proceed to the result/exit phase.
+	if err := stream.Send(isLastMsg()); err != nil {
+		t.Fatalf("Send is_last: %v", err)
+	}
+	_ = stream.CloseSend()
+
+	// All responses until EOF — must include the buffered result.
+	var gotResult *clientpb.RecognitionResult
+	for {
+		msg, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			t.Fatalf("Recv: %v", recvErr)
+		}
+		if r := msg.GetResult(); r != nil {
+			gotResult = r
+		}
+	}
+
+	if gotResult == nil {
+		t.Fatal("expected RecognitionResult before EOF; result forwarder did not drain ResultCh")
+	}
+	if gotResult.GetText() != "clean exit grpc" {
+		t.Errorf("text = %q, want %q", gotResult.GetText(), "clean exit grpc")
+	}
+	if !gotResult.GetIsFinal() {
+		t.Error("expected IsFinal=true")
+	}
+}
+
 // TestGRPC_PipelineError_StreamError verifies that when ProcessSession returns
 // an *STTError the gRPC client receives a StreamError frame before EOF.
 func TestGRPC_PipelineError_StreamError(t *testing.T) {
