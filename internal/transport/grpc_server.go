@@ -126,6 +126,7 @@ func (s *GRPCServer) StreamingRecognize(stream clientpb.STTService_StreamingReco
 					LanguageCode:  sess.Info.Language,
 					Task:          sessionTaskProto(sess.Info.Task),
 					DecodeProfile: sessionDecodeProfileProto(sess.Info.DecodeProfile),
+					EngineHint:    sess.Info.EngineHint,
 				},
 			},
 		},
@@ -182,8 +183,28 @@ func (s *GRPCServer) StreamingRecognize(stream clientpb.STTService_StreamingReco
 							},
 						},
 					})
+					return // error path: exit immediately, no drain needed
 				}
-				return
+				// Clean exit: drain remaining results before closing stream.
+				for {
+					select {
+					case result, ok := <-sess.ResultCh:
+						if !ok {
+							return
+						}
+						if err := stream.Send(&clientpb.StreamingRecognizeResponse{
+							StreamingResponse: &clientpb.StreamingRecognizeResponse_Result{
+								Result: result,
+							},
+						}); err != nil {
+							slog.Warn("send result failed during clean-exit drain",
+								"session_id", sess.ID, "error", err)
+							return
+						}
+					case <-sess.Context().Done():
+						return
+					}
+				}
 			case <-sess.Context().Done():
 				// Drain any results already buffered before exiting.
 				for {
@@ -220,7 +241,7 @@ recvLoop:
 				case sess.AudioInCh <- v.Audio:
 				case <-sess.Context().Done():
 					break recvLoop
-				case <-sess.PipelineExitCh:
+				case <-sess.ProcessingDone():
 					break recvLoop
 				}
 			}

@@ -438,7 +438,7 @@ func (h *WebSocketHandler) recvLoop(
 				return ctx.Err()
 			case <-sess.Context().Done():
 				return nil
-			case <-sess.PipelineExitCh:
+			case <-sess.ProcessingDone():
 				return nil
 			}
 
@@ -465,6 +465,9 @@ func (h *WebSocketHandler) recvLoop(
 //
 // Exits when:
 //   - ResultCh is closed (ProcessSession flushed all results) → sends "done"
+//   - PipelineExitCh fires with nil (clean exit before ResultCh close) →
+//     drains remaining ResultCh, then sends "done"
+//   - PipelineExitCh fires with non-nil error → sends error frame, returns non-nil
 //   - sess.Context() is cancelled (abnormal shutdown / processor nil) →
 //     drains buffered results, sends "done"
 //   - ctx is cancelled (recv error / HTTP disconnect) → exits without "done"
@@ -491,7 +494,21 @@ func (h *WebSocketHandler) sendLoop(
 				// Return non-nil so the errgroup cancels gCtx, unblocking recvLoop.
 				return fmt.Errorf("pipeline: %w", pipelineErr)
 			}
-			return nil
+			// Clean exit: SignalPipelineExit fired before close(ResultCh).
+			// Drain any results still buffered in ResultCh, then send "done".
+			for {
+				select {
+				case result, ok := <-sess.ResultCh:
+					if !ok {
+						return writeWSJSON(ctx, conn, wsDoneMessage{Type: "done"})
+					}
+					if err := writeWSJSON(ctx, conn, wsResult(result)); err != nil {
+						return fmt.Errorf("send result: %w", err)
+					}
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
 
 		case <-ctx.Done():
 			// WebSocket error or HTTP disconnect — no "done" frame sent.
