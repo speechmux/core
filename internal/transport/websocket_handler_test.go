@@ -14,6 +14,7 @@ import (
 	"github.com/speechmux/core/internal/config"
 	sttErrors "github.com/speechmux/core/internal/errors"
 	"github.com/speechmux/core/internal/session"
+	clientpb "github.com/speechmux/proto/gen/go/client/v1"
 )
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -445,5 +446,116 @@ func TestWebSocket_Resume_Success(t *testing.T) {
 	}
 	if sessMsg2.ResumeToken != token {
 		t.Errorf("resume_token changed after resume: got %q, want %q", sessMsg2.ResumeToken, token)
+	}
+}
+
+// wsErrFastProcessor exits immediately with an error without draining AudioInCh.
+// This simulates a mid-session plugin crash while the client is still sending audio.
+type wsErrFastProcessor struct{ err error }
+
+func (p *wsErrFastProcessor) ProcessSession(_ context.Context, sess *session.Session) error {
+	sess.SignalPipelineExit(p.err)
+	close(sess.ResultCh)
+	sess.MarkProcessingDone()
+	return p.err
+}
+
+// TestWebSocket_PipelineError_WhileSendingAudio verifies that when the pipeline
+// exits with an error while the client is still sending audio (recvLoop active),
+// the send loop — not the recv loop — owns error serialisation and the client
+// receives a {"type":"error"} frame.
+func TestWebSocket_PipelineError_WhileSendingAudio(t *testing.T) {
+	sm := session.NewManager(wsTestConfig(), nil)
+	proc := &wsErrFastProcessor{
+		err: sttErrors.New(sttErrors.ErrDecodeTimeout, "fast exit"),
+	}
+	h := NewWebSocketHandler(0, sm, proc, nil, nil, nil, 0, nil)
+	srv := wsTestServer(h)
+	defer srv.Close()
+
+	conn := dialWS(t, srv)
+	defer conn.CloseNow()
+
+	writeJSON(t, conn, startMsg("sess-fast-err"))
+
+	var sessMsg wsSessionMessage
+	readJSON(t, conn, &sessMsg)
+	if sessMsg.Type != "session" {
+		t.Fatalf("expected session, got %q", sessMsg.Type)
+	}
+
+	// Do NOT send "end". Client is still "sending audio" (recvLoop active).
+	// The pipeline already exited via wsErrFastProcessor.
+
+	// The client must receive an error frame, not EOF or "done".
+	var errMsg wsErrorMessage
+	readJSON(t, conn, &errMsg)
+	if errMsg.Type != "error" {
+		t.Errorf("type = %q, want error", errMsg.Type)
+	}
+	if errMsg.Code != string(sttErrors.ErrDecodeTimeout) {
+		t.Errorf("code = %q, want %q", errMsg.Code, sttErrors.ErrDecodeTimeout)
+	}
+}
+
+// wsCleanProcessor writes one result to ResultCh, then signals clean exit
+// in the same order as the real processor.go defer:
+//  1. SignalPipelineExit(nil)
+//  2. close(ResultCh)
+//  3. MarkProcessingDone()
+type wsCleanProcessor struct{}
+
+func (p *wsCleanProcessor) ProcessSession(_ context.Context, sess *session.Session) error {
+	for range sess.AudioInCh {
+	}
+	sess.ResultCh <- &clientpb.RecognitionResult{
+		IsFinal: true,
+		Text:    "hello",
+	}
+	sess.SignalPipelineExit(nil)
+	close(sess.ResultCh)
+	sess.MarkProcessingDone()
+	return nil
+}
+
+// TestWebSocket_CleanExit_ResultAndDone verifies that on a clean session end the
+// client receives the final recognition result followed by {"type":"done"}.
+// This guards against the bug where PipelineExitCh fires before ResultCh closes
+// and the send loop exits without draining buffered results or sending "done".
+func TestWebSocket_CleanExit_ResultAndDone(t *testing.T) {
+	sm := session.NewManager(wsTestConfig(), nil)
+	h := NewWebSocketHandler(0, sm, &wsCleanProcessor{}, nil, nil, nil, 0, nil)
+	srv := wsTestServer(h)
+	defer srv.Close()
+
+	conn := dialWS(t, srv)
+	defer conn.CloseNow()
+
+	writeJSON(t, conn, startMsg("sess-clean"))
+
+	var sessMsg wsSessionMessage
+	readJSON(t, conn, &sessMsg)
+	if sessMsg.Type != "session" {
+		t.Fatalf("expected session, got %q", sessMsg.Type)
+	}
+
+	// Signal end-of-audio so the processor drains and exits cleanly.
+	writeJSON(t, conn, wsControlMessage{Type: "end"})
+
+	// Must receive the result frame first.
+	var resultMsg wsResultMessage
+	readJSON(t, conn, &resultMsg)
+	if resultMsg.Type != "result" {
+		t.Errorf("type = %q, want result", resultMsg.Type)
+	}
+	if resultMsg.Text != "hello" {
+		t.Errorf("text = %q, want hello", resultMsg.Text)
+	}
+
+	// Then the "done" frame.
+	var doneMsg wsDoneMessage
+	readJSON(t, conn, &doneMsg)
+	if doneMsg.Type != "done" {
+		t.Errorf("type = %q, want done", doneMsg.Type)
 	}
 }

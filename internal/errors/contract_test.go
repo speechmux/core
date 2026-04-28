@@ -59,6 +59,8 @@ var errorCodeContract = []contractEntry{
 	{sttErrors.ErrCodecConversionFailed, codes.Internal, http.StatusInternalServerError},
 	{sttErrors.ErrVADStreamConnectFailed, codes.Internal, http.StatusInternalServerError},
 	{sttErrors.ErrAudioBufferOverflow, codes.Internal, http.StatusInternalServerError},
+	{sttErrors.ErrStreamingEndpointLost, codes.Unavailable, http.StatusServiceUnavailable},
+	{sttErrors.ErrEngineResponseTimeout, codes.DeadlineExceeded, http.StatusGatewayTimeout},
 
 	// ERR4xxx — admin/HTTP
 	{sttErrors.ErrAdminDisabled, codes.Unimplemented, http.StatusNotImplemented},
