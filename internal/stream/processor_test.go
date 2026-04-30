@@ -133,7 +133,7 @@ func TestProcessSession_HappyPath(t *testing.T) {
 	sttEP := startInferenceServer(t, &fixedTextSTT{text: "hello world"})
 
 	router := plugin.NewPluginRouter("")
-	if err := router.Add(sttEP.ID(), sttEP.Socket(), 0); err != nil {
+	if err := router.Add(sttEP.ID(), sttEP.Socket(), "", 0); err != nil {
 		t.Fatalf("router.Add: %v", err)
 	}
 	scheduler := stream.NewDecodeScheduler(router, 4, 0, 5.0, nil)
@@ -389,7 +389,7 @@ func TestProcessorEngineHintRouting(t *testing.T) {
 	sttEP := startInferenceServerWithID(t, "streaming-ep", stub)
 
 	router := plugin.NewPluginRouter("")
-	if err := router.Add(sttEP.ID(), sttEP.Socket(), 0); err != nil {
+	if err := router.Add(sttEP.ID(), sttEP.Socket(), "", 0); err != nil {
 		t.Fatalf("router.Add: %v", err)
 	}
 	scheduler := stream.NewDecodeScheduler(router, 4, 0, 5.0, nil)
@@ -435,7 +435,7 @@ func TestProcessorEngineHint_Nonexistent(t *testing.T) {
 	sttEP := startInferenceServerWithID(t, "streaming-ep", stub)
 
 	router := plugin.NewPluginRouter("")
-	if err := router.Add(sttEP.ID(), sttEP.Socket(), 0); err != nil {
+	if err := router.Add(sttEP.ID(), sttEP.Socket(), "", 0); err != nil {
 		t.Fatalf("router.Add: %v", err)
 	}
 	scheduler := stream.NewDecodeScheduler(router, 4, 0, 5.0, nil)
@@ -482,7 +482,7 @@ func TestProcessSession_ResultHasExpectedFields(t *testing.T) {
 	sttEP := startInferenceServer(t, &fixedTextSTT{text: "field check"})
 
 	router := plugin.NewPluginRouter("")
-	if err := router.Add(sttEP.ID(), sttEP.Socket(), 0); err != nil {
+	if err := router.Add(sttEP.ID(), sttEP.Socket(), "", 0); err != nil {
 		t.Fatalf("router.Add: %v", err)
 	}
 	scheduler := stream.NewDecodeScheduler(router, 4, 0, 5.0, nil)

@@ -82,7 +82,7 @@ func TestDecodeScheduler_ConcurrentLimit(t *testing.T) {
 	// STT stub holds each request for 300 ms so we can saturate the semaphore.
 	sttEP := startInferenceServer(t, &slowSTTServer{latency: 300 * time.Millisecond})
 	router := plugin.NewPluginRouter("")
-	if err := router.Add(sttEP.ID(), sttEP.Socket(), 0); err != nil {
+	if err := router.Add(sttEP.ID(), sttEP.Socket(), "", 0); err != nil {
 		t.Fatalf("router.Add: %v", err)
 	}
 
@@ -159,10 +159,10 @@ func TestDecodeScheduler_PluginFailureRerouting(t *testing.T) {
 	okEP := startInferenceServerWithID(t, "test-stt-ok", &helloSTTServer{})
 
 	router := plugin.NewPluginRouter("")
-	if err := router.Add(errEP.ID(), errEP.Socket(), 0); err != nil {
+	if err := router.Add(errEP.ID(), errEP.Socket(), "", 0); err != nil {
 		t.Fatalf("router.Add errEP: %v", err)
 	}
-	if err := router.Add(okEP.ID(), okEP.Socket(), 0); err != nil {
+	if err := router.Add(okEP.ID(), okEP.Socket(), "", 0); err != nil {
 		t.Fatalf("router.Add okEP: %v", err)
 	}
 	scheduler := stream.NewDecodeScheduler(router, 0, 0, 5.0, nil)
@@ -230,7 +230,7 @@ func TestDecodeScheduler_EngineNamePassedToMetrics(t *testing.T) {
 	ep := startInferenceServerWithID(t, "capable-stt", &capableSTTServer{})
 
 	router := plugin.NewPluginRouter("")
-	if err := router.Add(ep.ID(), ep.Socket(), 0); err != nil {
+	if err := router.Add(ep.ID(), ep.Socket(), "", 0); err != nil {
 		t.Fatalf("router.Add: %v", err)
 	}
 

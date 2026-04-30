@@ -19,7 +19,7 @@ type stubRegistry struct {
 	removeErr error
 }
 
-func (s *stubRegistry) AddInferenceEndpoint(id, socket string) error {
+func (s *stubRegistry) AddInferenceEndpoint(id, socket, address string) error {
 	if s.addErr != nil {
 		return s.addErr
 	}

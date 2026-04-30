@@ -75,7 +75,7 @@ func startPipelineVADServer(t *testing.T, srv vadpb.VADPluginServer) *plugin.End
 	vadpb.RegisterVADPluginServer(gs, srv)
 	go func() { _ = gs.Serve(ln) }()
 	t.Cleanup(func() { gs.Stop() })
-	ep, err := plugin.NewEndpoint("pipe-vad", sock, plugin.EndpointCircuitBreaker{})
+	ep, err := plugin.NewEndpoint("test-vad", sock, "", plugin.EndpointCircuitBreaker{})
 	if err != nil {
 		t.Fatalf("NewEndpoint VAD: %v", err)
 	}
@@ -94,7 +94,7 @@ func startPipelineSTTServer(t *testing.T, srv inferencepb.InferencePluginServer)
 	inferencepb.RegisterInferencePluginServer(gs, srv)
 	go func() { _ = gs.Serve(ln) }()
 	t.Cleanup(func() { gs.Stop() })
-	ep, err := plugin.NewEndpoint("pipe-stt", sock, plugin.EndpointCircuitBreaker{})
+	ep, err := plugin.NewEndpoint("test-stt", sock, "", plugin.EndpointCircuitBreaker{})
 	if err != nil {
 		t.Fatalf("NewEndpoint STT: %v", err)
 	}
@@ -171,7 +171,7 @@ func buildPipeline(t *testing.T, pcfg pipelineCfg, text string) (clientpb_ inter
 	sttEP := startPipelineSTTServer(t, &pipelineSTTServer{text: text})
 
 	router := plugin.NewPluginRouter("")
-	if err := router.Add(sttEP.ID(), sttEP.Socket(), 0); err != nil {
+	if err := router.Add(sttEP.ID(), sttEP.Socket(), "", 0); err != nil {
 		t.Fatalf("router.Add: %v", err)
 	}
 	scheduler := stream.NewDecodeScheduler(router, 8, 0, pcfg.decodeTimeoutSec, nil)
@@ -199,7 +199,7 @@ func TestFullPipeline_IsLastFlushesResult(t *testing.T) {
 	sttEP := startPipelineSTTServer(t, &pipelineSTTServer{text: "pipeline result"})
 
 	router := plugin.NewPluginRouter("")
-	if err := router.Add(sttEP.ID(), sttEP.Socket(), 0); err != nil {
+	if err := router.Add(sttEP.ID(), sttEP.Socket(), "", 0); err != nil {
 		t.Fatalf("router.Add: %v", err)
 	}
 	scheduler := stream.NewDecodeScheduler(router, 8, 0, pcfg.decodeTimeoutSec, nil)

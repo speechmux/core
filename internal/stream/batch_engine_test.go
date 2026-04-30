@@ -78,14 +78,14 @@ func newTestScheduler(t *testing.T, srv inferencepb.InferencePluginServer) *Deco
 	go func() { _ = gs.Serve(ln) }()
 	t.Cleanup(func() { gs.Stop() })
 
-	ep, err := plugin.NewEndpoint("test-stt", sock, plugin.EndpointCircuitBreaker{})
+	ep, err := plugin.NewEndpoint("test-stt", sock, "", plugin.EndpointCircuitBreaker{})
 	if err != nil {
 		t.Fatalf("NewEndpoint: %v", err)
 	}
 	t.Cleanup(func() { _ = ep.Close() })
 
 	router := plugin.NewPluginRouter("")
-	if err := router.Add(ep.ID(), ep.Socket(), 0); err != nil {
+	if err := router.Add(ep.ID(), ep.Socket(), "", 0); err != nil {
 		t.Fatalf("router.Add: %v", err)
 	}
 

@@ -147,7 +147,7 @@ func TestStreamingEngine_ProcessSession_PartialsAndFinal(t *testing.T) {
 	sttEP := startInferenceServer(t, &nativeStreamingSTT{})
 
 	router := plugin.NewPluginRouter("")
-	if err := router.Add(sttEP.ID(), sttEP.Socket(), 0); err != nil {
+	if err := router.Add(sttEP.ID(), sttEP.Socket(), "", 0); err != nil {
 		t.Fatalf("router.Add: %v", err)
 	}
 	// FetchCapabilities so the router knows this is a NATIVE engine.
@@ -211,7 +211,7 @@ func TestStreamingEngine_ProcessSession_CommittedMonotonic(t *testing.T) {
 	sttEP := startInferenceServer(t, &nativeStreamingSTT{})
 
 	router := plugin.NewPluginRouter("")
-	if err := router.Add(sttEP.ID(), sttEP.Socket(), 0); err != nil {
+	if err := router.Add(sttEP.ID(), sttEP.Socket(), "", 0); err != nil {
 		t.Fatalf("router.Add: %v", err)
 	}
 	scheduler := stream.NewDecodeScheduler(router, 4, 0, 5.0, nil)
@@ -270,7 +270,7 @@ func TestStreamingEngine_ProcessSession_AudioEndClean(t *testing.T) {
 	sttEP := startInferenceServer(t, &nativeStreamingSTT{})
 
 	router := plugin.NewPluginRouter("")
-	if err := router.Add(sttEP.ID(), sttEP.Socket(), 0); err != nil {
+	if err := router.Add(sttEP.ID(), sttEP.Socket(), "", 0); err != nil {
 		t.Fatalf("router.Add: %v", err)
 	}
 	scheduler := stream.NewDecodeScheduler(router, 4, 0, 5.0, nil)
@@ -313,7 +313,7 @@ func TestStreamingEngine_ProcessSession_AutoFinalizeEngine(t *testing.T) {
 	sttEP := startInferenceServer(t, &autoFinalizeSTT{})
 
 	router := plugin.NewPluginRouter("")
-	if err := router.Add(sttEP.ID(), sttEP.Socket(), 0); err != nil {
+	if err := router.Add(sttEP.ID(), sttEP.Socket(), "", 0); err != nil {
 		t.Fatalf("router.Add: %v", err)
 	}
 	scheduler := stream.NewDecodeScheduler(router, 4, 0, 5.0, nil)

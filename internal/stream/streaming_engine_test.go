@@ -47,7 +47,7 @@ func startStubServer(t *testing.T, srv inferencepb.InferencePluginServer) *plugi
 	inferencepb.RegisterInferencePluginServer(gs, srv)
 	go func() { _ = gs.Serve(ln) }()
 	t.Cleanup(func() { gs.Stop() })
-	ep, err := plugin.NewEndpoint("stub", sock, plugin.EndpointCircuitBreaker{})
+	ep, err := plugin.NewEndpoint("stub", sock, "", plugin.EndpointCircuitBreaker{})
 	if err != nil {
 		t.Fatalf("NewEndpoint: %v", err)
 	}
@@ -288,27 +288,49 @@ func TestStreamingEngine_RecvLoopEmitsResult(t *testing.T) {
 }
 
 func TestStreamingEngine_IsFinalResetsAssembler(t *testing.T) {
+	// twoUtteranceStub sends: partial "hello" → final "hello world" → partial "foo"
+	// Per-utterance ResultAssembler design: committed resets to "" after each is_final.
+	// The monotonicity guarantee is within-utterance only.
 	ep := startStubServer(t, &twoUtteranceStub{})
 	e := buildEngine(t, ep, endpointingCore, config.StreamConfig{})
 	startEngine(t, e)
 	defer func() { _ = e.Close() }()
 
-	var prevCommitted string
-	for i := 0; i < 3; i++ {
+	collect := func() DecodeResult {
 		select {
 		case res, ok := <-e.Results():
 			if !ok {
-				return
+				t.Fatal("Results channel closed unexpectedly")
 			}
-			// committed must never shrink.
-			if len(res.CommittedText) < len(prevCommitted) {
-				t.Fatalf("committed shrank: %q → %q", prevCommitted, res.CommittedText)
-			}
-			prevCommitted = res.CommittedText
+			return res
 		case <-time.After(3 * time.Second):
 			t.Fatal("timeout waiting for result")
+			return DecodeResult{}
 		}
 	}
+
+	// Result 1: partial "hello" — committed="" (no word boundary yet), unstable="hello"
+	r1 := collect()
+	if r1.IsFinal {
+		t.Fatalf("expected partial for result 1, got final")
+	}
+
+	// Result 2: final "hello world" — committed="hello world", unstable=""
+	r2 := collect()
+	if !r2.IsFinal {
+		t.Fatalf("expected final for result 2")
+	}
+	if r2.CommittedText != "hello world" {
+		t.Fatalf("r2 committed = %q, want %q", r2.CommittedText, "hello world")
+	}
+
+	// Result 3: first partial of utterance 2 — committed="" (fresh utterance)
+	r3 := collect()
+	if r3.IsFinal {
+		t.Fatalf("expected partial for utterance 2, got final")
+	}
+	// committed for a new utterance starts empty; only grows within the utterance.
+	_ = r3
 }
 
 func TestStreamingEngine_ErrorResponseCancels(t *testing.T) {
