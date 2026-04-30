@@ -160,7 +160,7 @@ func TestPluginRouter_Add_DuplicateID(t *testing.T) {
 
 	// Adding the same id without a real socket should fail on the duplicate check,
 	// not on the dial (which would fail anyway without a real socket).
-	err := r.Add("ep1", "/tmp/ep1.sock", 0)
+	err := r.Add("ep1", "/tmp/ep1.sock", "", 0)
 	if err == nil {
 		t.Fatal("expected duplicate-id error")
 	}

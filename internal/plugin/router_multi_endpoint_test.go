@@ -70,7 +70,7 @@ func startCountingServer(t *testing.T, id, text string) (*countingInferenceServe
 	go func() { _ = gs.Serve(ln) }()
 	t.Cleanup(func() { gs.Stop() })
 
-	ep, err := NewEndpoint(id, sock, EndpointCircuitBreaker{})
+	ep, err := NewEndpoint(id, sock, "", EndpointCircuitBreaker{})
 	if err != nil {
 		t.Fatalf("NewEndpoint %s: %v", id, err)
 	}

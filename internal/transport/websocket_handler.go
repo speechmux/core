@@ -71,6 +71,7 @@ type wsResultMessage struct {
 	CommittedText string  `json:"committed_text"` // stable prefix
 	UnstableText  string  `json:"unstable_text"`  // in-flight suffix
 	LanguageCode  string  `json:"language_code,omitempty"`
+	EngineName    string  `json:"engine_name,omitempty"` // actual engine that processed this result
 	StartSec      float64 `json:"start_sec"` // utterance start (relative to session; 0 until tracking is added)
 	EndSec        float64 `json:"end_sec"`   // utterance end ≈ audio_duration for this result
 }
@@ -483,7 +484,7 @@ func (h *WebSocketHandler) sendLoop(
 				// Channel closed: all results flushed.
 				return writeWSJSON(ctx, conn, wsDoneMessage{Type: "done"})
 			}
-			if err := writeWSJSON(ctx, conn, wsResult(result)); err != nil {
+			if err := writeWSJSON(ctx, conn, wsResult(result, sess.EngineUsed())); err != nil {
 				return fmt.Errorf("send result: %w", err)
 			}
 
@@ -496,13 +497,14 @@ func (h *WebSocketHandler) sendLoop(
 			}
 			// Clean exit: SignalPipelineExit fired before close(ResultCh).
 			// Drain any results still buffered in ResultCh, then send "done".
+			engineName := sess.EngineUsed()
 			for {
 				select {
 				case result, ok := <-sess.ResultCh:
 					if !ok {
 						return writeWSJSON(ctx, conn, wsDoneMessage{Type: "done"})
 					}
-					if err := writeWSJSON(ctx, conn, wsResult(result)); err != nil {
+					if err := writeWSJSON(ctx, conn, wsResult(result, engineName)); err != nil {
 						return fmt.Errorf("send result: %w", err)
 					}
 				case <-ctx.Done():
@@ -517,6 +519,7 @@ func (h *WebSocketHandler) sendLoop(
 		case <-sess.Context().Done():
 			// Session closed (processor finished or client sent "end").
 			// Drain any results already buffered in the channel.
+			engineName := sess.EngineUsed()
 			for {
 				select {
 				case result, ok := <-sess.ResultCh:
@@ -524,7 +527,7 @@ func (h *WebSocketHandler) sendLoop(
 						_ = writeWSJSON(ctx, conn, wsDoneMessage{Type: "done"})
 						return nil
 					}
-					if err := writeWSJSON(ctx, conn, wsResult(result)); err != nil {
+					if err := writeWSJSON(ctx, conn, wsResult(result, engineName)); err != nil {
 						return nil // connection closing; swallow error
 					}
 				default:
@@ -539,7 +542,7 @@ func (h *WebSocketHandler) sendLoop(
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 // wsResult converts a RecognitionResult proto to a wsResultMessage.
-func wsResult(r *clientpb.RecognitionResult) wsResultMessage {
+func wsResult(r *clientpb.RecognitionResult, engineName string) wsResultMessage {
 	text := r.GetText()
 	if text == "" {
 		// Build combined text for backward compatibility with clients that
@@ -553,6 +556,7 @@ func wsResult(r *clientpb.RecognitionResult) wsResultMessage {
 		CommittedText: r.GetCommittedText(),
 		UnstableText:  r.GetUnstableText(),
 		LanguageCode:  r.GetLanguageCode(),
+		EngineName:    engineName,
 		StartSec:      r.GetStartSec(),
 		EndSec:        r.GetEndSec(),
 	}

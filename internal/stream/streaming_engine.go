@@ -328,12 +328,26 @@ func (e *streamingDecodeEngine) recvLoop(ctx context.Context) {
 				}
 			}
 
+			if h.GetIsFinal() {
+				e.logger.Info("raw_engine_final", "text", h.GetText())
+			} else {
+				e.logger.Debug("raw_engine_partial", "text", h.GetText())
+			}
+
 			var committed, unstable string
 			if h.GetCommittedText() != "" || h.GetUnstableText() != "" {
 				committed, unstable = e.assembler.UpdateRaw(
 					h.GetCommittedText(), h.GetUnstableText(), h.GetIsFinal())
 			} else {
 				committed, unstable = e.assembler.Update(h.GetText(), h.GetIsFinal())
+			}
+
+			if h.GetIsFinal() {
+				e.logger.Info("aggregated_final",
+					"committed", committed, "unstable", unstable)
+			} else {
+				e.logger.Debug("aggregated_partial",
+					"committed", committed, "unstable", unstable)
 			}
 
 			result := DecodeResult{

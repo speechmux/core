@@ -13,24 +13,25 @@ const punctBoundaries = ".,?!\u3001\u3002\uff0c\uff01\uff1f\u2026"
 const lcpWindowRunes = 200
 
 // ResultAssembler tracks committed_text / unstable_text across successive
-// partial and final decode results for a single session.
+// partial and final decode results for a single utterance.
 //
 // Rules (design doc §8):
-//   - committed_so_far is monotonically non-decreasing (rune count).
-//   - On is_final, the full decoded text is committed; state resets for the next utterance.
+//   - committed_so_far is monotonically non-decreasing within an utterance (rune count).
+//   - On is_final, the utterance text is returned as committed and all state resets;
+//     the next Update call begins a fresh utterance.
 //   - LCP comparison uses rune (Unicode code point) granularity, not bytes.
 //
 // ResultAssembler is not safe for concurrent use; callers must serialise access.
 type ResultAssembler struct {
-	committedSoFar string // confirmed text; never shrinks
+	committedSoFar string // within-utterance committed text; never shrinks within an utterance
 	previousText   string // the full merged text from the previous partial
 }
 
 // NewResultAssembler returns a zeroed ResultAssembler.
 func NewResultAssembler() *ResultAssembler { return &ResultAssembler{} }
 
-// Reset clears all internal state. Call between utterances if the session
-// continues after a final result.
+// Reset clears all internal state. Update with isFinal=true resets automatically;
+// call this only when discarding a partial utterance without a final result.
 func (a *ResultAssembler) Reset() {
 	a.committedSoFar = ""
 	a.previousText = ""
@@ -39,29 +40,35 @@ func (a *ResultAssembler) Reset() {
 // Update advances the commit state given the latest decoded text and returns
 // (committedText, unstableText).
 //
-//   - If isFinal is true, currentText becomes the full committed text and the
-//     unstable portion is empty.
-//   - If isFinal is false, the LCP of previousText and currentText (merged with
-//     committed prefix) is used to advance the commit boundary.
+//   - If isFinal is true, currentText is returned as the committed utterance text;
+//     all state resets so the next call begins a new utterance.
+//   - If isFinal is false, the LCP of previousText and currentText is used to
+//     advance the within-utterance commit boundary.
 func (a *ResultAssembler) Update(currentText string, isFinal bool) (committed, unstable string) {
 	current := strings.TrimSpace(currentText)
 
 	if isFinal {
 		if current == "" {
-			// Final decode with empty result — keep whatever was committed.
-			current = a.committedSoFar
+			a.committedSoFar = ""
+			a.previousText = ""
+			return "", ""
 		}
-		// Merge so the final never regresses behind what was committed.
-		merged := mergeTranscript(a.committedSoFar, current)
-		a.committedSoFar = merged
+		// Return the utterance text directly. Guard monotonicity against any
+		// within-utterance LCP commits that may have advanced committedSoFar.
+		final := current
+		if runeLen(final) < runeLen(a.committedSoFar) {
+			final = a.committedSoFar
+		}
+		a.committedSoFar = ""
 		a.previousText = ""
-		return a.committedSoFar, ""
+		return final, ""
 	}
 
 	// --- Partial decode path ---
 
 	if a.previousText == "" {
-		// First partial: nothing is committed yet.
+		// First partial of a new utterance; committedSoFar is always "" here
+		// because isFinal=true resets it.
 		a.previousText = current
 		return a.committedSoFar, current
 	}
@@ -90,18 +97,20 @@ func (a *ResultAssembler) Update(currentText string, isFinal bool) (committed, u
 
 // UpdateRaw is a pass-through path for streaming engines that emit explicit
 // committed/unstable text directly (rather than full cumulative transcripts).
-// It still enforces monotonicity: committed may only grow.
-// Returns the (committed, unstable) pair to forward to the client.
+// On isFinal, returns the complete utterance text and resets state.
+// On partials, enforces monotonicity: committed may only grow within an utterance.
 func (a *ResultAssembler) UpdateRaw(committed, unstable string, isFinal bool) (string, string) {
 	if isFinal {
-		full := committed + unstable
+		full := strings.TrimSpace(committed + unstable)
+		a.committedSoFar = ""
 		a.previousText = ""
-		a.committedSoFar += full
-		return a.committedSoFar, ""
+		return full, ""
 	}
-	// Enforce monotonicity: if engine shrinks committed, pin to previous.
+	// Enforce monotonicity within utterance: if engine shrinks committed, pin to previous.
 	if len(committed) < len(a.committedSoFar) {
 		committed = a.committedSoFar
+	} else {
+		a.committedSoFar = committed
 	}
 	return committed, unstable
 }

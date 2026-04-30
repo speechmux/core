@@ -11,7 +11,7 @@ import (
 // PluginRegistry supports runtime registration and deregistration of inference
 // plugin endpoints. Implemented by *runtime.Application.
 type PluginRegistry interface {
-	AddInferenceEndpoint(id, socket string) error
+	AddInferenceEndpoint(id, socket, address string) error
 	RemoveInferenceEndpoint(id string) error
 	ListInferenceEndpoints() []plugin.EndpointSummary
 }
@@ -70,8 +70,9 @@ func (h *HTTPServer) handleAdminPluginsInference(w http.ResponseWriter, r *http.
 }
 
 type registerRequest struct {
-	ID     string `json:"id"`
-	Socket string `json:"socket"`
+	ID      string `json:"id"`
+	Socket  string `json:"socket"`
+	Address string `json:"address"`
 }
 
 func (h *HTTPServer) adminRegisterInference(w http.ResponseWriter, r *http.Request) {
@@ -80,23 +81,33 @@ func (h *HTTPServer) adminRegisterInference(w http.ResponseWriter, r *http.Reque
 		http.Error(w, `{"code":"ERR1001","message":"invalid JSON body"}`, http.StatusBadRequest)
 		return
 	}
-	if req.ID == "" || req.Socket == "" {
-		http.Error(w, `{"code":"ERR1001","message":"id and socket are required"}`, http.StatusBadRequest)
+	if req.ID == "" {
+		http.Error(w, `{"code":"ERR1001","message":"id is required"}`, http.StatusBadRequest)
+		return
+	}
+	if req.Socket == "" && req.Address == "" {
+		http.Error(w, `{"code":"ERR1001","message":"socket or address is required"}`, http.StatusBadRequest)
+		return
+	}
+	if req.Socket != "" && req.Address != "" {
+		http.Error(w, `{"code":"ERR1001","message":"socket and address are mutually exclusive"}`, http.StatusBadRequest)
 		return
 	}
 
-	if err := h.registry.AddInferenceEndpoint(req.ID, req.Socket); err != nil {
+	if err := h.registry.AddInferenceEndpoint(req.ID, req.Socket, req.Address); err != nil {
 		http.Error(w, jsonError("ERR3001", err.Error()), http.StatusConflict)
 		return
 	}
 
+	resp := map[string]string{"status": "registered", "id": req.ID}
+	if req.Socket != "" {
+		resp["socket"] = req.Socket
+	} else {
+		resp["address"] = req.Address
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(map[string]string{
-		"status": "registered",
-		"id":     req.ID,
-		"socket": req.Socket,
-	})
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (h *HTTPServer) adminDeregisterInference(w http.ResponseWriter, r *http.Request) {

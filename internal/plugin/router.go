@@ -55,7 +55,8 @@ type PluginRouter struct {
 // EndpointSummary is a point-in-time snapshot of a registered endpoint's state.
 type EndpointSummary struct {
 	ID             string `json:"id"`
-	Socket         string `json:"socket"`
+	Socket         string `json:"socket,omitempty"`  // UDS path; empty for TCP endpoints
+	Address        string `json:"address,omitempty"` // TCP host:port; empty for UDS endpoints
 	CircuitBreaker string `json:"circuit_breaker"`
 	EngineName     string `json:"engine_name"`  // from GetCapabilities; empty if unavailable
 	ModelSize      string `json:"model_size"`   // from GetCapabilities; empty if unavailable
@@ -81,10 +82,12 @@ func NewPluginRouter(mode string) *PluginRouter {
 	}
 }
 
-// Add dials the given socket, wraps it in an InferenceClient, and appends it
-// to the pool with the given priority (used only by active_standby routing).
+// Add dials the given endpoint (UDS socket or TCP address), wraps it in an
+// InferenceClient, and appends it to the pool with the given priority
+// (used only by active_standby routing).
+// Exactly one of socket or address must be non-empty.
 // Returns an error if id is already registered or dial fails.
-func (r *PluginRouter) Add(id, socket string, priority int) error {
+func (r *PluginRouter) Add(id, socket, address string, priority int) error {
 	// Pre-check under read lock for a clear early error.
 	r.mu.RLock()
 	for _, e := range r.entries {
@@ -95,7 +98,7 @@ func (r *PluginRouter) Add(id, socket string, priority int) error {
 	}
 	r.mu.RUnlock()
 
-	ep, err := NewEndpoint(id, socket, r.cb)
+	ep, err := NewEndpoint(id, socket, address, r.cb)
 	if err != nil {
 		return fmt.Errorf("add inference endpoint %q: %w", id, err)
 	}
@@ -177,6 +180,7 @@ func (r *PluginRouter) List() []EndpointSummary {
 		result[i] = EndpointSummary{
 			ID:             e.client.endpoint.ID(),
 			Socket:         e.client.endpoint.Socket(),
+			Address:        e.client.endpoint.Address(),
 			CircuitBreaker: e.client.endpoint.CircuitState(),
 			EngineName:     e.client.EngineName(),
 			ModelSize:      e.client.ModelSize(),

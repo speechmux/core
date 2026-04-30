@@ -47,7 +47,16 @@ func NewSupervisor(cfg ProcessConfig, stateDir string) *Supervisor {
 
 // Run starts the process and blocks until ctx is cancelled or Stop is called.
 // It respects the RestartPolicy and applies exponential backoff between retries.
+// Subprocess stdout/stderr are written to <stateDir>/<name>.log.
 func (s *Supervisor) Run(ctx context.Context) error {
+	logFile, err := s.openLogFile()
+	if err != nil {
+		slog.Warn("could not open log file, falling back to stderr", "name", s.cfg.Name, "err", err)
+		logFile = os.Stderr
+	} else {
+		defer logFile.Close()
+	}
+
 	backoff := time.Second
 	for {
 		if s.isStopped() || ctx.Err() != nil {
@@ -58,8 +67,8 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		if s.cfg.WorkingDirectory != "" {
 			cmd.Dir = s.cfg.WorkingDirectory
 		}
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
 		// Put the child in its own process group so SIGTERM reaches it even
 		// if the parent's process group has changed.
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -86,14 +95,17 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		s.mu.Unlock()
 
 		_ = s.writePID(cmd.Process.Pid)
-		slog.Info("process started", "name", s.cfg.Name, "pid", cmd.Process.Pid)
+		slog.Info("process started", "name", s.cfg.Name, "pid", cmd.Process.Pid,
+			"log", s.logFilePath())
 
 		// Watcher: terminates the process when ctx or stopCh fires.
 		// It is the only goroutine that signals the process; Run() only
 		// calls cmd.Wait(), so there is no double-Wait race.
 		go s.watchAndKill(cmd, processDone, ctx)
 
+		startTime := time.Now()
 		waitErr := cmd.Wait()
+		uptime := time.Since(startTime)
 		close(processDone)
 
 		s.mu.Lock()
@@ -103,12 +115,20 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		s.mu.Unlock()
 
 		_ = s.removePID()
-		backoff = time.Second // reset after a successful start+run cycle
+
+		// Reset backoff only when the process ran long enough to be considered
+		// "stable". Short-lived exits (likely config/port errors) keep accumulating
+		// backoff to avoid rapid restart loops.
+		if uptime >= 10*time.Second {
+			backoff = time.Second
+		}
 
 		if waitErr != nil {
-			slog.Warn("process exited with error", "name", s.cfg.Name, "pid", cmd.Process.Pid, "err", waitErr)
+			slog.Warn("process exited with error", "name", s.cfg.Name, "pid", cmd.Process.Pid,
+				"uptime", uptime.Round(time.Second), "err", waitErr)
 		} else {
-			slog.Info("process exited", "name", s.cfg.Name, "pid", cmd.Process.Pid)
+			slog.Info("process exited", "name", s.cfg.Name, "pid", cmd.Process.Pid,
+				"uptime", uptime.Round(time.Second))
 		}
 
 		if s.isStopped() || ctx.Err() != nil {
@@ -130,7 +150,6 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		if !s.sleepBackoff(ctx, &backoff) {
 			return nil
 		}
-		backoff = time.Second
 	}
 }
 
@@ -230,6 +249,17 @@ func (s *Supervisor) sleepBackoff(ctx context.Context, backoff *time.Duration) b
 
 func (s *Supervisor) pidFilePath() string {
 	return filepath.Join(s.stateDir, s.cfg.Name+".pid")
+}
+
+func (s *Supervisor) logFilePath() string {
+	return filepath.Join(s.stateDir, s.cfg.Name+".log")
+}
+
+func (s *Supervisor) openLogFile() (*os.File, error) {
+	if err := os.MkdirAll(s.stateDir, 0o755); err != nil {
+		return nil, err
+	}
+	return os.OpenFile(s.logFilePath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 }
 
 func (s *Supervisor) writePID(pid int) error {

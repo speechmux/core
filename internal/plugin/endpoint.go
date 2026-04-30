@@ -37,7 +37,8 @@ const (
 //	HALF_OPEN → one probe request is allowed through to test recovery.
 type Endpoint struct {
 	id               string
-	socket           string
+	socket           string // UDS path; empty for TCP endpoints
+	address          string // TCP host:port; empty for UDS endpoints
 	conn             *grpc.ClientConn
 	state            atomic.Int32 // holds circuitState
 	failureCount     atomic.Int64
@@ -53,25 +54,33 @@ type EndpointCircuitBreaker struct {
 	HalfOpenTimeout  time.Duration
 }
 
-// NewEndpoint dials the given Unix domain socket and returns a ready Endpoint.
+// NewEndpoint dials the given endpoint and returns a ready Endpoint.
+// Exactly one of socket (UDS path) or address (TCP host:port) must be non-empty.
 // Zero values in cb fall back to the defaults (5 failures, 30 s half-open).
-func NewEndpoint(id, socket string, cb EndpointCircuitBreaker) (*Endpoint, error) {
+func NewEndpoint(id, socket, address string, cb EndpointCircuitBreaker) (*Endpoint, error) {
 	if cb.FailureThreshold == 0 {
 		cb.FailureThreshold = 5
 	}
 	if cb.HalfOpenTimeout == 0 {
 		cb.HalfOpenTimeout = 30 * time.Second
 	}
+	var target string
+	if address != "" {
+		target = address           // TCP: "vad-plugin:50060"
+	} else {
+		target = "unix://" + socket // UDS: "unix:///tmp/speechmux/vad.sock"
+	}
 	conn, err := grpc.NewClient(
-		"unix://"+socket,
+		target,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("endpoint %s: dial unix://%s: %w", id, socket, err)
+		return nil, fmt.Errorf("endpoint %s: dial %s: %w", id, target, err)
 	}
 	return &Endpoint{
 		id:               id,
 		socket:           socket,
+		address:          address,
 		conn:             conn,
 		failureThreshold: int64(cb.FailureThreshold),
 		halfOpenTimeout:  cb.HalfOpenTimeout,
@@ -131,8 +140,11 @@ func (e *Endpoint) RecordFailure() {
 // ID returns the endpoint identifier.
 func (e *Endpoint) ID() string { return e.id }
 
-// Socket returns the Unix domain socket path for this endpoint.
+// Socket returns the Unix domain socket path for this endpoint. Empty for TCP endpoints.
 func (e *Endpoint) Socket() string { return e.socket }
+
+// Address returns the TCP host:port for this endpoint. Empty for UDS endpoints.
+func (e *Endpoint) Address() string { return e.address }
 
 // CircuitState returns a human-readable circuit breaker state string.
 func (e *Endpoint) CircuitState() string {

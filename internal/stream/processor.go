@@ -146,6 +146,7 @@ func (p *StreamProcessor) ProcessSession(ctx context.Context, sess *session.Sess
 					engineName = cfg.Stream.EndpointingSource
 				}
 				engine = newStreamingDecodeEngine(streamClient, src, cfg.Stream, p.obs, engineName)
+				sess.SetEngineUsed(engineName)
 			} else {
 				// Batch path: release pin immediately; batch uses per-request routing.
 				p.router.Unpin(sess.ID)

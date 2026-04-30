@@ -38,21 +38,28 @@ func main() {
 	pluginsPath := flag.String("plugins", "config/plugins.yaml", "path to plugins.yaml")
 	flag.Parse()
 
-	// Bootstrap structured logging.
+	// Bootstrap with INFO so config-load errors are visible, then re-apply
+	// the level from logging.level in core.yaml.
+	logLevel := new(slog.LevelVar)
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
+		Level: logLevel,
 	})))
 
-	if err := run(*cfgPath, *pluginsPath); err != nil {
+	if err := run(*cfgPath, *pluginsPath, logLevel); err != nil {
 		slog.Error("fatal", "err", err)
 		os.Exit(1)
 	}
 }
 
-func run(cfgPath, pluginsPath string) error {
+func run(cfgPath, pluginsPath string, logLevel *slog.LevelVar) error {
 	cfgLoader, err := config.NewLoader(cfgPath)
 	if err != nil {
 		return err
+	}
+
+	// Apply log level from config now that core.yaml is loaded.
+	if err := logLevel.UnmarshalText([]byte(cfgLoader.Load().Logging.Level)); err != nil {
+		slog.Warn("invalid logging.level in config; defaulting to info", "value", cfgLoader.Load().Logging.Level)
 	}
 
 	plugins, err := config.LoadPlugins(pluginsPath)

@@ -52,6 +52,11 @@ type Session struct {
 	// Use TouchActivity / LastActivity to access it safely.
 	lastActivity atomic.Value // holds time.Time
 
+	// engineUsed is the actual engine name selected by the router, set once by
+	// the processor after routing and then read-only. Stored as *string so the
+	// zero value (nil) is distinguishable from an empty string.
+	engineUsed atomic.Pointer[string]
+
 	ctx    context.Context
 	cancel context.CancelFunc
 
@@ -211,6 +216,19 @@ func (s *Session) Unpark() bool {
 		s.parkTimer = nil
 	}
 	return s.parked.CompareAndSwap(true, false)
+}
+
+// SetEngineUsed records the actual engine name selected by the router.
+// Called once by the processor goroutine before any decode results are sent.
+func (s *Session) SetEngineUsed(name string) { s.engineUsed.Store(&name) }
+
+// EngineUsed returns the actual engine name selected by the router, or an empty
+// string if the session has not yet been routed (e.g. during session setup).
+func (s *Session) EngineUsed() string {
+	if p := s.engineUsed.Load(); p != nil {
+		return *p
+	}
+	return ""
 }
 
 // generateResumeToken returns a cryptographically random base64url-encoded token.

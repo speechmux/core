@@ -59,13 +59,15 @@ func New(cfgLoader *config.Loader, pluginsCfg *config.PluginsConfig) (*Applicati
 	// Wire VAD endpoints from the pool (supports multiple instances).
 	var vadEndpoints []*plugin.Endpoint
 	if pluginsCfg != nil {
-		config.ValidatePlugins(pluginsCfg)
+		if err := config.ValidatePlugins(pluginsCfg); err != nil {
+			return nil, fmt.Errorf("plugins config: %w", err)
+		}
 		vadCB := plugin.EndpointCircuitBreaker{
 			FailureThreshold: pluginsCfg.VAD.CircuitBreaker.FailureThreshold,
 			HalfOpenTimeout:  pluginsCfg.VAD.CircuitBreaker.HalfOpenTimeout,
 		}
 		for _, epCfg := range pluginsCfg.VAD.AllEndpoints() {
-			ep, err := plugin.NewEndpoint(epCfg.ID, epCfg.Socket, vadCB)
+			ep, err := plugin.NewEndpoint(epCfg.ID, epCfg.Socket, epCfg.Address, vadCB)
 			if err != nil {
 				// Log but do not fail startup — the circuit breaker will handle recovery.
 				slog.Warn("VAD endpoint dial failed; plugin unavailable", "id", epCfg.ID, "error", err)
@@ -93,7 +95,7 @@ func New(cfgLoader *config.Loader, pluginsCfg *config.PluginsConfig) (*Applicati
 	// Populate the router from the static configuration (if any).
 	if pluginsCfg != nil {
 		for _, epCfg := range pluginsCfg.Inference.Endpoints {
-			if err := inferRouter.Add(epCfg.ID, epCfg.Socket, epCfg.Priority); err != nil {
+			if err := inferRouter.Add(epCfg.ID, epCfg.Socket, epCfg.Address, epCfg.Priority); err != nil {
 				slog.Warn("inference endpoint init failed", "id", epCfg.ID, "err", err)
 			}
 		}
@@ -193,8 +195,8 @@ func New(cfgLoader *config.Loader, pluginsCfg *config.PluginsConfig) (*Applicati
 
 // AddInferenceEndpoint implements transport.PluginRegistry.
 // Endpoints added via the Admin API receive priority 0 (lowest).
-func (a *Application) AddInferenceEndpoint(id, socket string) error {
-	return a.inferRouter.Add(id, socket, 0)
+func (a *Application) AddInferenceEndpoint(id, socket, address string) error {
+	return a.inferRouter.Add(id, socket, address, 0)
 }
 
 // RemoveInferenceEndpoint implements transport.PluginRegistry.

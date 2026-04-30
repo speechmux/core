@@ -1,24 +1,35 @@
-state_dir: /tmp/speechmux  # Directory where PID files are written at runtime.
+state_dir: /tmp/speechmux  # Directory where PID files and the manager PID are written at runtime.
 
 processes:
   - name: vad                              # Unique name; used in status output and PID file names.
-    command: .venv/bin/python3             # Executable to run. Use venv python to ensure correct dependencies.
-    args:                                  # Command-line arguments passed to command.
+    command: .venv/bin/python3             # Relative to working_directory (workspace root).
+    args:
       - "-m"
       - "speechmux_plugin_vad.main"
       - "--config"
       - "plugin-vad/config/vad.yaml"       # Socket path and engine are configured inside this file.
-    working_directory: ".."                # Directory the process runs in; relative to speechmux-core's cwd.
+    working_directory: "."                 # Workspace root — where make is run and .venv lives.
     restart: on-failure                    # Restart policy: always | on-failure | never.
     startup_delay_ms: 500                  # Wait (ms) after this process starts before launching the next one.
 
-  - name: whisper-mlx
-    command: .venv/bin/python3             # Executable to run. Use venv python to ensure correct dependencies.
+  - name: stt-sherpa                       # sherpa-onnx streaming Zipformer engine.
+    command: .venv/bin/python3             # Relative to working_directory (workspace root).
     args:
       - "-m"
       - "speechmux_plugin_stt.main"
       - "--config"
-      - "plugin-stt/config/inference.yaml" # Socket path and engine are configured inside this file.
-    working_directory: ".."
+      - "plugin-stt/config/inference-onnx.yaml"  # Socket path and engine configured inside this file.
+    working_directory: "."                 # Workspace root.
     restart: on-failure
-    startup_delay_ms: 0                    # STT starts after VAD due to startup_delay_ms on vad.
+    startup_delay_ms: 0                    # Starts after VAD due to VAD's startup_delay_ms above.
+
+  - name: core                             # SpeechMux Core — started last, after plugins are ready.
+    command: ./core/bin/speechmux-core     # Must be pre-built with 'make build'.
+    args:
+      - "--config"
+      - "core/config/core.yaml"
+      - "--plugins"
+      - "core/config/plugins.yaml"
+    working_directory: "."                 # Workspace root.
+    restart: on-failure
+    startup_delay_ms: 1000                 # Wait (ms) for plugins to bind their sockets before core starts.

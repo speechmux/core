@@ -204,9 +204,11 @@ type InferencePluginConfig struct {
 }
 
 // EndpointConfig identifies a single inference plugin endpoint.
+// Exactly one of Socket (UDS) or Address (TCP host:port) must be set.
 type EndpointConfig struct {
 	ID       string `yaml:"id"`
-	Socket   string `yaml:"socket"`
+	Socket   string `yaml:"socket"`   // UDS path (Nomad/local). Mutually exclusive with Address.
+	Address  string `yaml:"address"`  // TCP host:port (Docker/remote). Mutually exclusive with Socket.
 	Priority int    `yaml:"priority"`
 }
 
@@ -301,9 +303,9 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// ValidatePlugins converts raw integer durations in PluginsConfig to time.Duration
-// and fills in defaults for circuit-breaker settings.
-func ValidatePlugins(p *PluginsConfig) {
+// ValidatePlugins converts raw integer durations in PluginsConfig to time.Duration,
+// fills in defaults for circuit-breaker settings, and validates endpoint exclusivity.
+func ValidatePlugins(p *PluginsConfig) error {
 	validateCB := func(cb *CircuitBreakerConfig, defaultThreshold int, defaultHalfOpen int) {
 		if cb.FailureThreshold == 0 {
 			cb.FailureThreshold = defaultThreshold
@@ -318,4 +320,21 @@ func ValidatePlugins(p *PluginsConfig) {
 	if p.Inference.HealthProbeTimeoutSec == 0 {
 		p.Inference.HealthProbeTimeoutSec = 5
 	}
+	for _, ep := range p.VAD.AllEndpoints() {
+		if ep.Socket == "" && ep.Address == "" {
+			return fmt.Errorf("vad endpoint %q: must set either socket or address", ep.ID)
+		}
+		if ep.Socket != "" && ep.Address != "" {
+			return fmt.Errorf("vad endpoint %q: socket and address are mutually exclusive", ep.ID)
+		}
+	}
+	for _, ep := range p.Inference.Endpoints {
+		if ep.Socket == "" && ep.Address == "" {
+			return fmt.Errorf("inference endpoint %q: must set either socket or address", ep.ID)
+		}
+		if ep.Socket != "" && ep.Address != "" {
+			return fmt.Errorf("inference endpoint %q: socket and address are mutually exclusive", ep.ID)
+		}
+	}
+	return nil
 }
