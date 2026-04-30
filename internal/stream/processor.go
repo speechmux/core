@@ -130,10 +130,15 @@ func (p *StreamProcessor) ProcessSession(ctx context.Context, sess *session.Sess
 				}
 				defer release()
 
+				epSrc := inferencepb.EndpointingSource_ENDPOINTING_SOURCE_CORE
+				if src == endpointingEngine {
+					epSrc = inferencepb.EndpointingSource_ENDPOINTING_SOURCE_ENGINE
+				}
 				streamCfg := &inferencepb.StreamStartConfig{
-					SessionId:    sess.ID,
-					SampleRate:   sampleRate,
-					LanguageCode: sess.Info.Language,
+					SessionId:          sess.ID,
+					SampleRate:         sampleRate,
+					LanguageCode:       sess.Info.Language,
+					EndpointingSource:  epSrc,
 				}
 				streamClient, err := plugin.NewInferenceStreamClient(ctx, routedClient.Endpoint(), streamCfg)
 				if err != nil {
