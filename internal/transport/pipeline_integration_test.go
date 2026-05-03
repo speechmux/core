@@ -174,10 +174,10 @@ func buildPipeline(t *testing.T, pcfg pipelineCfg, text string) (clientpb_ inter
 	if err := router.Add(sttEP.ID(), sttEP.Socket(), "", 0); err != nil {
 		t.Fatalf("router.Add: %v", err)
 	}
-	scheduler := stream.NewDecodeScheduler(router, 8, 0, pcfg.decodeTimeoutSec, nil)
+	scheduler := stream.NewDecodeScheduler(0)
 
 	cfgPtr := buildPipelineConfig(pcfg)
-	proc := stream.NewStreamProcessor(cfgPtr, []*plugin.Endpoint{vadEP}, scheduler, nil, nil)
+	proc := stream.NewStreamProcessor(cfgPtr, []*plugin.Endpoint{vadEP}, scheduler, router, nil)
 
 	cfg := &config.Config{}
 	cfg.Defaults()
@@ -202,10 +202,10 @@ func TestFullPipeline_IsLastFlushesResult(t *testing.T) {
 	if err := router.Add(sttEP.ID(), sttEP.Socket(), "", 0); err != nil {
 		t.Fatalf("router.Add: %v", err)
 	}
-	scheduler := stream.NewDecodeScheduler(router, 8, 0, pcfg.decodeTimeoutSec, nil)
+	scheduler := stream.NewDecodeScheduler(0)
 
 	cfgPtr := buildPipelineConfig(pcfg)
-	proc := stream.NewStreamProcessor(cfgPtr, []*plugin.Endpoint{vadEP}, scheduler, nil, nil)
+	proc := stream.NewStreamProcessor(cfgPtr, []*plugin.Endpoint{vadEP}, scheduler, router, nil)
 
 	cfg := &config.Config{}
 	cfg.Defaults()

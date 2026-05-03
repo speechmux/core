@@ -151,7 +151,7 @@ func TestStreamingEngine_ProcessSession_PartialsAndFinal(t *testing.T) {
 		t.Fatalf("router.Add: %v", err)
 	}
 	// FetchCapabilities so the router knows this is a NATIVE engine.
-	scheduler := stream.NewDecodeScheduler(router, 4, 0, 5.0, nil)
+	scheduler := stream.NewDecodeScheduler(0)
 	cfgPtr := newStreamingTestConfig(0.15)
 	proc := stream.NewStreamProcessor(cfgPtr, []*plugin.Endpoint{vadEP}, scheduler, router, nil)
 
@@ -214,7 +214,7 @@ func TestStreamingEngine_ProcessSession_CommittedMonotonic(t *testing.T) {
 	if err := router.Add(sttEP.ID(), sttEP.Socket(), "", 0); err != nil {
 		t.Fatalf("router.Add: %v", err)
 	}
-	scheduler := stream.NewDecodeScheduler(router, 4, 0, 5.0, nil)
+	scheduler := stream.NewDecodeScheduler(0)
 	cfgPtr := newStreamingTestConfig(0.15)
 	proc := stream.NewStreamProcessor(cfgPtr, []*plugin.Endpoint{vadEP}, scheduler, router, nil)
 
@@ -273,7 +273,7 @@ func TestStreamingEngine_ProcessSession_AudioEndClean(t *testing.T) {
 	if err := router.Add(sttEP.ID(), sttEP.Socket(), "", 0); err != nil {
 		t.Fatalf("router.Add: %v", err)
 	}
-	scheduler := stream.NewDecodeScheduler(router, 4, 0, 5.0, nil)
+	scheduler := stream.NewDecodeScheduler(0)
 	cfgPtr := newStreamingTestConfig(0.5)
 	proc := stream.NewStreamProcessor(cfgPtr, []*plugin.Endpoint{vadEP}, scheduler, router, nil)
 
@@ -316,7 +316,7 @@ func TestStreamingEngine_ProcessSession_AutoFinalizeEngine(t *testing.T) {
 	if err := router.Add(sttEP.ID(), sttEP.Socket(), "", 0); err != nil {
 		t.Fatalf("router.Add: %v", err)
 	}
-	scheduler := stream.NewDecodeScheduler(router, 4, 0, 5.0, nil)
+	scheduler := stream.NewDecodeScheduler(0)
 
 	// Use endpointing_source=engine: no VAD endpoints needed.
 	cfg := &config.Config{}

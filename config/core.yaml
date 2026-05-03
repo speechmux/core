@@ -40,9 +40,18 @@ stream:
   streaming_finalize_timeout_sec: 3.0   # Seconds to wait for is_final after FINALIZE_UTTERANCE before ERR3007.
   engine_response_timeout_sec: 5.0      # Lag watchdog for endpointing_source=engine (seconds); 0 = disable.
   max_utterance_sec: 30.0               # Force FINALIZE_UTTERANCE if engine emits no is_final within this duration; 0 = disable.
+  fair_dispatch_max_concurrent: 1       # Max parallel Transcribe RPCs dispatched simultaneously across all sessions
+                                        # (batch path). Set to 1 for single-GPU or single-process engines (e.g.
+                                        # mlx-whisper, faster-whisper) that process one request at a time internally;
+                                        # increasing beyond the engine's actual parallelism only adds queuing latency.
+                                        # Set to N for N independent engine processes. 0 = unlimited.
+  fair_dispatch_max_partial_queue: 0    # Max queued partial tasks per session in the fair dispatcher. Oldest partial
+                                        # is dropped when limit is reached; 0 = unlimited. Recommended starting point:
+                                        # ceil(session_timeout_sec / partial_decode_interval_sec). For defaults
+                                        # (30s / 1.5s) that is ~20. Set lower (4–6) to aggressively cancel stale
+                                        # partials under heavy load; 0 relies solely on final-triggered cleanup.
 
 decode:
-  max_pending: 0              # Batch unary queue depth; 0 = unlimited. Increase to cap concurrent STT RPCs.
   max_streaming_sessions: 16  # Max concurrent streaming sessions; 0 = unlimited. Prevents long-lived streams
                               # from starving batch decode throughput.
 

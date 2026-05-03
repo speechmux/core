@@ -8,7 +8,7 @@ import (
 )
 
 func TestScheduler_AcquireStreamingSlot_Unlimited(t *testing.T) {
-	s := NewDecodeScheduler(newEmptyRouter(), 0, 0, 10.0, nil)
+	s := NewDecodeScheduler(0)
 
 	for range 100 {
 		release, err := s.AcquireStreamingSlot(context.Background())
@@ -20,7 +20,7 @@ func TestScheduler_AcquireStreamingSlot_Unlimited(t *testing.T) {
 }
 
 func TestScheduler_AcquireStreamingSlot_BlocksWhenFull(t *testing.T) {
-	s := NewDecodeScheduler(newEmptyRouter(), 0, 2, 10.0, nil)
+	s := NewDecodeScheduler(2)
 
 	r1, err := s.AcquireStreamingSlot(context.Background())
 	if err != nil {
@@ -61,7 +61,7 @@ func TestScheduler_AcquireStreamingSlot_BlocksWhenFull(t *testing.T) {
 }
 
 func TestScheduler_AcquireStreamingSlot_CtxCancel(t *testing.T) {
-	s := NewDecodeScheduler(newEmptyRouter(), 0, 1, 10.0, nil)
+	s := NewDecodeScheduler(1)
 
 	r1, err := s.AcquireStreamingSlot(context.Background())
 	if err != nil {
@@ -79,7 +79,7 @@ func TestScheduler_AcquireStreamingSlot_CtxCancel(t *testing.T) {
 }
 
 func TestScheduler_AcquireStreamingSlot_ReleaseOnce(t *testing.T) {
-	s := NewDecodeScheduler(newEmptyRouter(), 0, 1, 10.0, nil)
+	s := NewDecodeScheduler(1)
 
 	release, err := s.AcquireStreamingSlot(context.Background())
 	if err != nil {

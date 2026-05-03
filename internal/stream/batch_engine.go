@@ -24,6 +24,14 @@ type decodeTask struct {
 	endSec   float64
 }
 
+// submittedTask pairs the original decodeTask metadata with the result channel
+// returned by FairDecodeDispatcher.Enqueue(). runResultCollector drains these
+// in submission order to preserve ResultAssembler invariants.
+type submittedTask struct {
+	meta     decodeTask
+	resultCh <-chan BatchResult
+}
+
 // batchFrameMs is the VAD frame aggregation period used by vadSendLoop. It is
 // also the sequence-to-seconds conversion factor for the ring buffer sequence
 // numbers that reach this engine via OnUtteranceEnd.
@@ -31,11 +39,12 @@ type decodeTask struct {
 const batchFrameMs = 30
 
 // batchDecodeEngine implements DecodeEngine for Whisper-family unary plugins.
-// It owns an internal decode queue, a partial decode timer goroutine, a decode
-// worker goroutine, and a ResultAssembler for committed/unstable tracking.
+// It owns an internal decode queue, a partial decode timer goroutine, a
+// submitter goroutine (runSubmitter), a result collector goroutine
+// (runResultCollector), and a ResultAssembler for committed/unstable tracking.
 type batchDecodeEngine struct {
-	scheduler *DecodeScheduler
-	buf       *AudioRingBuffer
+	dispatcher BatchScheduler
+	buf        *AudioRingBuffer
 
 	// Populated at Start.
 	sess *session.Session
@@ -53,23 +62,23 @@ type batchDecodeEngine struct {
 	resultsCh     chan DecodeResult
 
 	// timerStopCh is closed to stop the partial timer without cancelling e.ctx.
-	// This allows in-flight Submit calls in the worker to complete normally when
-	// the engine is closed gracefully (e.g. after the VAD stream ends).
+	// This allows in-flight Transcribe RPCs to complete normally when the engine
+	// is closed gracefully (e.g. after the VAD stream ends).
 	timerStopCh chan struct{}
 
 	// Goroutine completion signals.
-	timerDone  chan struct{}
-	workerDone chan struct{}
+	timerDone     chan struct{}
+	workerDone    chan struct{} // closed when runSubmitter exits
+	collectorDone chan struct{} // closed when runResultCollector exits
 
-	// Monotonic request-id counter (only accessed by runDecodeWorker).
+	// Monotonic request-id counter (only accessed by runSubmitter).
 	reqSeq uint64
 }
 
 // newBatchDecodeEngine constructs an unstarted batchDecodeEngine.
-// The scheduler may be nil, in which case the worker drains its queue and
-// logs, matching the pre-refactor behaviour (processor.go:359-365).
-func newBatchDecodeEngine(scheduler *DecodeScheduler, buf *AudioRingBuffer) *batchDecodeEngine {
-	return &batchDecodeEngine{scheduler: scheduler, buf: buf}
+// dispatcher may be nil, in which case tasks are drained and logged.
+func newBatchDecodeEngine(dispatcher BatchScheduler, buf *AudioRingBuffer) *batchDecodeEngine {
+	return &batchDecodeEngine{dispatcher: dispatcher, buf: buf}
 }
 
 // Start implements DecodeEngine.
@@ -87,15 +96,23 @@ func (e *batchDecodeEngine) Start(ctx context.Context, sess *session.Session, cf
 
 	e.timerDone = make(chan struct{})
 	e.workerDone = make(chan struct{})
+	e.collectorDone = make(chan struct{})
 
 	go func() {
 		defer close(e.timerDone)
 		e.runPartialTimer()
 	}()
 
+	pendingCh := make(chan submittedTask, 8)
+
 	go func() {
 		defer close(e.workerDone)
-		e.runDecodeWorker()
+		e.runSubmitter(pendingCh)
+	}()
+
+	go func() {
+		defer close(e.collectorDone)
+		e.runResultCollector(pendingCh)
 	}()
 
 	return nil
@@ -156,24 +173,26 @@ func (e *batchDecodeEngine) OnUtteranceEnd(startSeq, endSeq uint64) error {
 // Results implements DecodeEngine.
 func (e *batchDecodeEngine) Results() <-chan DecodeResult { return e.resultsCh }
 
-// Close implements DecodeEngine. Shutdown order is critical:
-//  1. Close timerStopCh — partial timer exits without cancelling e.ctx so that
-//     the worker's in-flight Submit calls can still complete normally.
-//  2. Wait for the partial timer to exit — no more writes to decodeQueueCh.
-//  3. Close decodeQueueCh — the worker's range loop drains remaining items
-//     (including any final task enqueued just before Close) and exits.
-//  4. Wait for the worker to exit.
-//  5. Close resultsCh — signals the forwarder goroutine that all results are done.
-//  6. Call e.cancel() to release the derived context.
-//
-// This ordering is required to avoid "send on closed channel" panics and to
-// ensure that a final decode enqueued by OnUtteranceEnd is not lost.
+// Close implements DecodeEngine. Shutdown order:
+//  1. dispatcher.CancelSession — cancel queued (not-yet-dispatched) tasks.
+//  2. close(timerStopCh) — partial timer exits; no more writes to decodeQueueCh.
+//  3. <-timerDone
+//  4. close(decodeQueueCh) — runSubmitter drains remaining items and exits.
+//  5. <-workerDone — runSubmitter done; pendingCh closed by its defer.
+//  6. <-collectorDone — runResultCollector drained pendingCh and exited.
+//     MUST wait here before closing resultsCh — otherwise "send on closed channel".
+//  7. close(resultsCh)
+//  8. e.cancel()
 func (e *batchDecodeEngine) Close() error {
 	e.closeOnce.Do(func() {
+		if e.dispatcher != nil {
+			e.dispatcher.CancelSession(e.sess.ID)
+		}
 		close(e.timerStopCh)
 		<-e.timerDone
 		close(e.decodeQueueCh)
 		<-e.workerDone
+		<-e.collectorDone
 		close(e.resultsCh)
 		e.cancel()
 	})
@@ -308,70 +327,96 @@ func (e *batchDecodeEngine) runPartialTimer() {
 	}
 }
 
-// ── runDecodeWorker ──────────────────────────────────────────────────────────
-// Drains decodeQueueCh, calls the scheduler, runs the ResultAssembler, and
-// emits DecodeResult on resultsCh. Moved from StreamProcessor.decodeWorkerLoop
-// (processor.go:347-429). The key difference: instead of building a
-// clientpb.RecognitionResult and writing to sess.ResultCh, this writes a
-// DecodeResult to e.resultsCh. The caller (StreamProcessor) converts.
-func (e *batchDecodeEngine) runDecodeWorker() {
-	if e.scheduler == nil {
+// ── runSubmitter ─────────────────────────────────────────────────────────────
+// Drains decodeQueueCh, enqueues each task to the FairDecodeDispatcher, and
+// sends the (meta, resultCh) pair to pendingCh for runResultCollector.
+// Closes pendingCh when decodeQueueCh is closed (engine is done submitting).
+func (e *batchDecodeEngine) runSubmitter(pendingCh chan<- submittedTask) {
+	defer close(pendingCh)
+	if e.dispatcher == nil {
 		for range e.decodeQueueCh {
-			slog.Debug("decode worker: no scheduler, dropping task", "session_id", e.sess.ID)
+			slog.Debug("decode worker: no dispatcher, dropping task", "session_id", e.sess.ID)
 		}
 		return
 	}
-
-	assembler := NewResultAssembler()
-
 	for task := range e.decodeQueueCh {
 		e.reqSeq++
 		reqID := fmt.Sprintf("%s-r%d", e.sess.ID, e.reqSeq)
+		resultCh := e.dispatcher.Enqueue(&BatchTask{
+			Ctx:          e.ctx,
+			SessionID:    e.sess.ID,
+			RequestID:    reqID,
+			AudioData:    task.audio,
+			SampleRate:   e.cfg.SampleRate,
+			LanguageCode: e.cfg.LanguageCode,
+			Task:         inferencepb.Task_TASK_TRANSCRIBE,
+			DecodeOptions: nil, // TODO: forward from negotiated session config
+			IsFinal:      task.isFinal,
+			IsPartial:    task.isPartial,
+			StartSec:     task.startSec,
+			EndSec:       task.endSec,
+		})
+		select {
+		case pendingCh <- submittedTask{meta: task, resultCh: resultCh}:
+		case <-e.ctx.Done():
+			return
+		}
+	}
+}
 
-		resp, err := e.scheduler.Submit(
-			e.ctx,
-			e.sess.ID,
-			reqID,
-			task.audio,
-			e.cfg.SampleRate,
-			e.cfg.LanguageCode,
-			inferencepb.Task_TASK_TRANSCRIBE,
-			nil, // DecodeProfile → DecodeOptions handled in a future phase
-			task.isFinal,
-			task.isPartial,
-		)
-		if err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+// ── runResultCollector ───────────────────────────────────────────────────────
+// Drains pendingCh in submission order, waits for each BatchResult, runs the
+// ResultAssembler, and emits DecodeResult on resultsCh.
+// Submission-order processing preserves ResultAssembler's committed/unstable
+// invariants even though the dispatcher may complete tasks out of order.
+func (e *batchDecodeEngine) runResultCollector(pendingCh <-chan submittedTask) {
+	assembler := NewResultAssembler()
+
+	for st := range pendingCh {
+		var fr BatchResult
+		select {
+		case fr = <-st.resultCh:
+		case <-e.ctx.Done():
+			return
+		}
+
+		if errors.Is(fr.Err, errPartialCancelled) ||
+			errors.Is(fr.Err, errSessionCancelled) ||
+			errors.Is(fr.Err, ErrShutdown) {
+			continue // stale partial, session cancelled, or dispatcher shutdown
+		}
+		if fr.Err != nil {
+			if errors.Is(fr.Err, context.Canceled) || errors.Is(fr.Err, context.DeadlineExceeded) {
 				return
 			}
 			var sttErr *sttErrors.STTError
-			if errors.As(err, &sttErr) &&
-				sttErr.Code() == sttErrors.ErrGlobalPendingExceeded && !task.isFinal {
-				slog.Debug("partial decode dropped (queue full)", "session_id", e.sess.ID)
+			if errors.As(fr.Err, &sttErr) &&
+				sttErr.Code() == sttErrors.ErrGlobalPendingExceeded && !st.meta.isFinal {
+				slog.Debug("partial decode dropped (dispatcher full)", "session_id", e.sess.ID)
 				continue
 			}
 			slog.Warn("decode failed",
-				"session_id", e.sess.ID, "is_final", task.isFinal, "error", err)
-			if task.isFinal {
+				"session_id", e.sess.ID, "is_final", st.meta.isFinal, "error", fr.Err)
+			if st.meta.isFinal {
 				assembler.Reset()
 			}
 			continue
 		}
 
-		committed, unstable := assembler.Update(resp.Text, task.isFinal)
-		if task.isFinal {
+		committed, unstable := assembler.Update(fr.Resp.Text, st.meta.isFinal)
+		if st.meta.isFinal {
 			assembler.Reset()
 		}
 
 		result := DecodeResult{
-			Text:          resp.Text,
+			Text:          fr.Resp.Text,
 			CommittedText: committed,
 			UnstableText:  unstable,
-			IsFinal:       task.isFinal,
-			StartSec:      task.startSec,
-			EndSec:        task.endSec,
-			AudioDuration: resp.AudioDurationSec,
-			LanguageCode:  resp.LanguageCode,
+			IsFinal:       st.meta.isFinal,
+			StartSec:      st.meta.startSec,
+			EndSec:        st.meta.endSec,
+			AudioDuration: fr.Resp.AudioDurationSec,
+			LanguageCode:  fr.Resp.LanguageCode,
 		}
 
 		select {

@@ -33,6 +33,11 @@ type MetricsObserver interface {
 	RecordStreamingPartialLatency(latencySec float64, engineName string)
 	RecordStreamingFinalizeLatency(latencySec float64, engineName string)
 	RecordEngineResponseTimeout(engineName string)
+
+	// Fair dispatch observability.
+	RecordFairDispatchQueueDepth(sessionID string, depth int)
+	RecordFairDispatchPartialCancelled(reason string)
+	RecordFairDispatchWaitSec(waitSec float64, isFinal bool)
 }
 
 // ── Prometheus implementation ─────────────────────────────────────────────────
@@ -57,6 +62,11 @@ type PrometheusMetrics struct {
 	streamingFinalizeLatency *prometheus.HistogramVec
 	streamingTerminations    *prometheus.CounterVec
 	engineResponseTimeouts   *prometheus.CounterVec
+
+	// Fair dispatch observability.
+	fairDispatchQueueDepth        *prometheus.GaugeVec
+	fairDispatchPartialCancelled  *prometheus.CounterVec
+	fairDispatchWaitSec           *prometheus.HistogramVec
 }
 
 // NewPrometheusMetrics creates and registers all SpeechMux metrics.
@@ -112,6 +122,19 @@ func NewPrometheusMetrics() *PrometheusMetrics {
 			Name: "speechmux_engine_response_timeout_total",
 			Help: "Total engine response lag timeout events.",
 		}, []string{"engine_name"}),
+		fairDispatchQueueDepth: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "speechmux_fair_dispatch_queue_depth",
+			Help: "Per-session queue depth in the fair dispatcher at enqueue time.",
+		}, []string{"session_id"}),
+		fairDispatchPartialCancelled: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "speechmux_fair_dispatch_partial_cancelled_total",
+			Help: "Stale partial cancellations by reason (stale_final or queue_full).",
+		}, []string{"reason"}),
+		fairDispatchWaitSec: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "speechmux_fair_dispatch_wait_sec",
+			Help:    "Time from Enqueue() to dispatch start, in seconds.",
+			Buckets: decodeLatencyBuckets,
+		}, []string{"type"}), // type = "final" | "partial"
 	}
 
 	reg.MustRegister(
@@ -126,6 +149,9 @@ func NewPrometheusMetrics() *PrometheusMetrics {
 		m.streamingFinalizeLatency,
 		m.streamingTerminations,
 		m.engineResponseTimeouts,
+		m.fairDispatchQueueDepth,
+		m.fairDispatchPartialCancelled,
+		m.fairDispatchWaitSec,
 		// Standard Go runtime metrics.
 		prometheus.NewGoCollector(),
 		prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}),
@@ -175,6 +201,18 @@ func (m *PrometheusMetrics) RecordStreamingFinalizeLatency(latencySec float64, e
 
 func (m *PrometheusMetrics) RecordEngineResponseTimeout(engineName string) {
 	m.engineResponseTimeouts.WithLabelValues(engineName).Inc()
+}
+
+func (m *PrometheusMetrics) RecordFairDispatchQueueDepth(sessionID string, depth int) {
+	m.fairDispatchQueueDepth.WithLabelValues(sessionID).Set(float64(depth))
+}
+
+func (m *PrometheusMetrics) RecordFairDispatchPartialCancelled(reason string) {
+	m.fairDispatchPartialCancelled.WithLabelValues(reason).Inc()
+}
+
+func (m *PrometheusMetrics) RecordFairDispatchWaitSec(waitSec float64, isFinal bool) {
+	m.fairDispatchWaitSec.WithLabelValues(decodeType(isFinal)).Observe(waitSec)
 }
 
 // TextHandler returns an http.Handler that serves /metrics in Prometheus text format.
@@ -239,3 +277,6 @@ func (NopMetrics) RecordStreamingSessionClose(_ string, _ string)         {}
 func (NopMetrics) RecordStreamingPartialLatency(_ float64, _ string)      {}
 func (NopMetrics) RecordStreamingFinalizeLatency(_ float64, _ string)     {}
 func (NopMetrics) RecordEngineResponseTimeout(_ string)                   {}
+func (NopMetrics) RecordFairDispatchQueueDepth(_ string, _ int)           {}
+func (NopMetrics) RecordFairDispatchPartialCancelled(_ string)            {}
+func (NopMetrics) RecordFairDispatchWaitSec(_ float64, _ bool)            {}

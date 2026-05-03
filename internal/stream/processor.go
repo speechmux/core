@@ -35,15 +35,19 @@ import (
 type StreamProcessor struct {
 	cfg          *atomic.Pointer[config.Config]
 	vadEndpoints []*plugin.Endpoint
-	vadRR        atomic.Uint64    // round-robin counter for VAD endpoint selection
-	scheduler    *DecodeScheduler // nil when no inference endpoints are configured
+	vadRR        atomic.Uint64        // round-robin counter for VAD endpoint selection
+	scheduler    *DecodeScheduler     // nil when no inference endpoints are configured
 	router       *plugin.PluginRouter // nil when no inference endpoints are configured
+	dispatcher   *FairDecodeDispatcher // shared across sessions; nil when no router
 	obs          metrics.MetricsObserver
 }
 
 // NewStreamProcessor creates a StreamProcessor backed by the given VAD endpoint
 // pool, optional decode scheduler, and optional plugin router. Each ProcessSession
 // call picks the next VAD endpoint in round-robin order.
+//
+// The FairDecodeDispatcher is created internally and shared across all sessions.
+// Call Close() to shut it down when the server exits.
 func NewStreamProcessor(
 	cfg *atomic.Pointer[config.Config],
 	vadEndpoints []*plugin.Endpoint,
@@ -54,12 +58,33 @@ func NewStreamProcessor(
 	if obs == nil {
 		obs = metrics.NopMetrics{}
 	}
+	var dispatcher *FairDecodeDispatcher
+	if router != nil {
+		initCfg := cfg.Load()
+		dispatcher = NewFairDecodeDispatcher(
+			router,
+			obs,
+			initCfg.Stream.FairDispatchMaxConcurrent,
+			initCfg.Stream.FairDispatchMaxPartialQueue,
+			initCfg.Stream.DecodeTimeoutSec,
+		)
+	}
 	return &StreamProcessor{
 		cfg:          cfg,
 		vadEndpoints: vadEndpoints,
 		scheduler:    scheduler,
 		router:       router,
+		dispatcher:   dispatcher,
 		obs:          obs,
+	}
+}
+
+// Close shuts down the shared FairDecodeDispatcher and waits for in-flight
+// Transcribe RPCs to complete. Safe to call multiple times (idempotent after
+// the first call because cancel() is idempotent and wg.Wait() returns immediately).
+func (p *StreamProcessor) Close() {
+	if p.dispatcher != nil {
+		p.dispatcher.Shutdown()
 	}
 }
 
@@ -161,7 +186,12 @@ func (p *StreamProcessor) ProcessSession(ctx context.Context, sess *session.Sess
 
 	if engine == nil {
 		// Batch path (no router, no healthy endpoint, or BATCH_ONLY engine).
-		engine = newBatchDecodeEngine(p.scheduler, buf)
+		// Use FairDecodeDispatcher when available; nil dispatcher drops tasks (dev/test).
+		var batchSched BatchScheduler
+		if p.dispatcher != nil {
+			batchSched = p.dispatcher
+		}
+		engine = newBatchDecodeEngine(batchSched, buf)
 		src = endpointingCore
 	}
 

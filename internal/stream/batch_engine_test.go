@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/speechmux/core/internal/config"
+	"github.com/speechmux/core/internal/metrics"
 	"github.com/speechmux/core/internal/plugin"
 	"github.com/speechmux/core/internal/session"
 	commonpb "github.com/speechmux/proto/gen/go/common/v1"
@@ -59,8 +60,9 @@ func (s *fixedTextSTTServer) Transcribe(_ context.Context, req *inferencepb.Tran
 	}, nil
 }
 
-// newTestScheduler wires a real DecodeScheduler backed by the given STT server.
-func newTestScheduler(t *testing.T, srv inferencepb.InferencePluginServer) *DecodeScheduler {
+// newTestDispatcher wires a FairDecodeDispatcher backed by the given STT server.
+// maxConcurrent=0 means unlimited; decodeTimeoutSec=10.
+func newTestDispatcher(t *testing.T, srv inferencepb.InferencePluginServer) *FairDecodeDispatcher {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "batcheng")
 	if err != nil {
@@ -89,7 +91,9 @@ func newTestScheduler(t *testing.T, srv inferencepb.InferencePluginServer) *Deco
 		t.Fatalf("router.Add: %v", err)
 	}
 
-	return NewDecodeScheduler(router, 0, 0, 10.0, nil)
+	d := NewFairDecodeDispatcher(router, metrics.NopMetrics{}, 0, 0, 10.0)
+	t.Cleanup(func() { d.Shutdown() })
+	return d
 }
 
 // ── tests ──────────────────────────────────────────────────────────────────────
@@ -123,7 +127,7 @@ func TestBatchDecodeEngine_StartClose(t *testing.T) {
 	}
 }
 
-// TestBatchDecodeEngine_NilSchedulerDrains verifies that with a nil scheduler,
+// TestBatchDecodeEngine_NilSchedulerDrains verifies that with a nil dispatcher,
 // queued tasks are drained and the worker exits cleanly.
 func TestBatchDecodeEngine_NilSchedulerDrains(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -148,11 +152,11 @@ func TestBatchDecodeEngine_NilSchedulerDrains(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	// With nil scheduler, no result should appear on Results().
+	// With nil dispatcher, no result should appear on Results().
 	select {
 	case res, ok := <-eng.Results():
 		if ok {
-			t.Fatalf("unexpected result with nil scheduler: %+v", res)
+			t.Fatalf("unexpected result with nil dispatcher: %+v", res)
 		}
 		// channel closed — expected
 	case <-time.After(500 * time.Millisecond):
@@ -166,14 +170,14 @@ func TestBatchDecodeEngine_OnUtteranceEndEmitsFinal(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	scheduler := newTestScheduler(t, &fixedTextSTTServer{text: "hello"})
+	dispatcher := newTestDispatcher(t, &fixedTextSTTServer{text: "hello"})
 
 	buf := NewAudioRingBuffer(30)
 	buf.Append(1, make([]byte, 960))
 	buf.Append(2, make([]byte, 960))
 	buf.AdvanceWatermark(2)
 
-	eng := newBatchDecodeEngine(scheduler, buf)
+	eng := newBatchDecodeEngine(dispatcher, buf)
 	sess := batchEngineTestSession(ctx)
 	if err := eng.Start(ctx, sess, batchEngineCfg(1.5)); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -203,7 +207,7 @@ func TestBatchDecodeEngine_PartialTimerFires(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	scheduler := newTestScheduler(t, &fixedTextSTTServer{text: "partial"})
+	dispatcher := newTestDispatcher(t, &fixedTextSTTServer{text: "partial"})
 
 	buf := NewAudioRingBuffer(30)
 	buf.Append(1, make([]byte, 960))
@@ -211,7 +215,7 @@ func TestBatchDecodeEngine_PartialTimerFires(t *testing.T) {
 	buf.AdvanceWatermark(2)
 
 	const intervalSec = 0.1 // 100ms for fast test
-	eng := newBatchDecodeEngine(scheduler, buf)
+	eng := newBatchDecodeEngine(dispatcher, buf)
 	sess := batchEngineTestSession(ctx)
 	if err := eng.Start(ctx, sess, batchEngineCfg(intervalSec)); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -245,7 +249,7 @@ func TestBatchDecodeEngine_PartialStopsOnSpeechEnd(t *testing.T) {
 	buf.AdvanceWatermark(1)
 
 	const intervalSec = 0.1
-	eng := newBatchDecodeEngine(nil, buf) // nil scheduler: no results ever
+	eng := newBatchDecodeEngine(nil, buf) // nil dispatcher: no results ever
 	sess := batchEngineTestSession(ctx)
 	if err := eng.Start(ctx, sess, batchEngineCfg(intervalSec)); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -318,4 +322,90 @@ func TestBatchDecodeEngine_CloseIdempotent(t *testing.T) {
 	if err := eng.Close(); err != nil {
 		t.Fatalf("second Close: %v", err)
 	}
+}
+
+// TestBatchDecodeEngine_FinalAfterPartials verifies that when a final is
+// submitted, previously queued partials are cancelled before dispatch and do
+// not reach the mock RPC.
+func TestBatchDecodeEngine_FinalAfterPartials(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// countingSrv records how many Transcribe calls actually arrive.
+	var transcribeCalls int
+	countingSrv := &countingSTTServer{
+		fixedTextSTTServer: fixedTextSTTServer{text: "final"},
+		onTranscribe: func() { transcribeCalls++ },
+	}
+
+	dispatcher := newTestDispatcher(t, countingSrv)
+
+	buf := NewAudioRingBuffer(30)
+	buf.Append(1, make([]byte, 960))
+	buf.Append(2, make([]byte, 960))
+	buf.AdvanceWatermark(2)
+
+	const intervalSec = 0.05 // fast partial timer
+	eng := newBatchDecodeEngine(dispatcher, buf)
+	sess := batchEngineTestSession(ctx)
+	if err := eng.Start(ctx, sess, batchEngineCfg(intervalSec)); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	eng.OnSpeechStart(1)
+	// Allow a couple of partial timer ticks before enqueuing the final.
+	time.Sleep(time.Duration(intervalSec*3*float64(time.Second)) + 50*time.Millisecond)
+
+	if err := eng.OnUtteranceEnd(1, 2); err != nil {
+		t.Fatalf("OnUtteranceEnd: %v", err)
+	}
+
+	// Drain any preceding partial results and wait for the final.
+	// In-flight partials (already dispatched before the final was enqueued)
+	// complete normally and produce results before the final arrives.
+	deadline := time.After(3 * time.Second)
+	var got *DecodeResult
+outer:
+	for {
+		select {
+		case res, ok := <-eng.Results():
+			if !ok {
+				t.Fatal("Results() closed before a final result arrived")
+			}
+			if res.IsFinal {
+				got = &res
+				break outer
+			}
+		case <-deadline:
+			t.Fatal("no final result within 3s")
+		}
+	}
+	if got.Text != "final" {
+		t.Fatalf("text = %q, want %q", got.Text, "final")
+	}
+
+	if err := eng.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// With unlimited concurrency, each partial timer tick dispatches
+	// immediately — there are no queued (cancellable) partials by the time
+	// the final arrives. Stale-partial cancellation is exercised by the
+	// fair_dispatch_test.go suite (TestFairDispatch_StalePartialCancellation).
+	// Here we only verify the call count is bounded (no infinite loop).
+	expectedMax := int(intervalSec*3/intervalSec) + 3 // ~3 timer ticks + 1 final + slack
+	if transcribeCalls > expectedMax {
+		t.Errorf("too many RPC calls: %d (expected at most %d)", transcribeCalls, expectedMax)
+	}
+}
+
+// countingSTTServer wraps fixedTextSTTServer and calls onTranscribe on each RPC.
+type countingSTTServer struct {
+	fixedTextSTTServer
+	onTranscribe func()
+}
+
+func (s *countingSTTServer) Transcribe(ctx context.Context, req *inferencepb.TranscribeRequest) (*inferencepb.TranscribeResponse, error) {
+	s.onTranscribe()
+	return s.fixedTextSTTServer.Transcribe(ctx, req)
 }

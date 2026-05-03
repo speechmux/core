@@ -38,6 +38,7 @@ type Application struct {
 	stor                *storage.AudioStorage        // nil when storage is disabled
 	vadEndpoints        []*plugin.Endpoint           // empty when VAD plugin is not configured
 	inferRouter         *plugin.PluginRouter         // nil when no inference endpoints are configured
+	streamProc          *stream.StreamProcessor      // nil when no processor configured; closed in gracefulShutdown
 	healthProbeInterval time.Duration                // 0 means no health probe
 	healthProbeTimeout  time.Duration                // per-probe HealthCheck deadline
 	draining            atomic.Bool                  // set during graceful shutdown (for health endpoint)
@@ -90,7 +91,7 @@ func New(cfgLoader *config.Loader, pluginsCfg *config.PluginsConfig) (*Applicati
 			HalfOpenTimeout:  pluginsCfg.Inference.CircuitBreaker.HalfOpenTimeout,
 		})
 	}
-	scheduler := stream.NewDecodeScheduler(inferRouter, cfg.Decode.MaxPending, cfg.Decode.MaxStreamingSessions, cfg.Stream.DecodeTimeoutSec, prom)
+	scheduler := stream.NewDecodeScheduler(cfg.Decode.MaxStreamingSessions)
 
 	// Populate the router from the static configuration (if any).
 	if pluginsCfg != nil {
@@ -107,8 +108,10 @@ func New(cfgLoader *config.Loader, pluginsCfg *config.PluginsConfig) (*Applicati
 	// Create the processor when VAD or inference endpoints are present:
 	// endpointing_source=engine requires inference but no VAD.
 	var proc transport.SessionProcessor
+	var streamProc *stream.StreamProcessor
 	if len(vadEndpoints) > 0 || (pluginsCfg != nil && len(pluginsCfg.Inference.Endpoints) > 0) {
-		proc = stream.NewStreamProcessor(&ptr, vadEndpoints, scheduler, inferRouter, prom)
+		streamProc = stream.NewStreamProcessor(&ptr, vadEndpoints, scheduler, inferRouter, prom)
+		proc = streamProc
 	}
 
 	// Build codec converter targeting the configured sample rate.
@@ -146,6 +149,7 @@ func New(cfgLoader *config.Loader, pluginsCfg *config.PluginsConfig) (*Applicati
 		stor:                stor,
 		vadEndpoints:        vadEndpoints,
 		inferRouter:         inferRouter,
+		streamProc:          streamProc,
 		healthProbeInterval: healthProbeInterval,
 		healthProbeTimeout:  healthProbeTimeout,
 		tracingShutdown:     tracingShutdown,
@@ -320,6 +324,11 @@ func (a *Application) gracefulShutdown(ctx context.Context) error {
 
 	// Phase 3: Force-stop any remaining connections.
 	a.grpc.Stop()
+
+	// Shut down the shared FairDecodeDispatcher after all sessions have drained.
+	if a.streamProc != nil {
+		a.streamProc.Close()
+	}
 	slog.Info("shutdown complete")
 	return nil
 }
