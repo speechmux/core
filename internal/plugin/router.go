@@ -10,6 +10,7 @@ import (
 	"time"
 
 	commonpb "github.com/speechmux/proto/gen/go/common/v1"
+	inferencepb "github.com/speechmux/proto/gen/go/inference/v1"
 )
 
 // ErrPinnedEndpointLost is returned by Pinned when the session's pinned
@@ -57,6 +58,7 @@ type EndpointSummary struct {
 	ID             string `json:"id"`
 	Socket         string `json:"socket,omitempty"`  // UDS path; empty for TCP endpoints
 	Address        string `json:"address,omitempty"` // TCP host:port; empty for UDS endpoints
+	Healthy        bool   `json:"healthy"`           // true when the endpoint is accepting requests
 	CircuitBreaker string `json:"circuit_breaker"`
 	EngineName     string `json:"engine_name"`  // from GetCapabilities; empty if unavailable
 	ModelSize      string `json:"model_size"`   // from GetCapabilities; empty if unavailable
@@ -181,6 +183,7 @@ func (r *PluginRouter) List() []EndpointSummary {
 			ID:             e.client.endpoint.ID(),
 			Socket:         e.client.endpoint.Socket(),
 			Address:        e.client.endpoint.Address(),
+			Healthy:        e.client.endpoint.IsHealthy(),
 			CircuitBreaker: e.client.endpoint.CircuitState(),
 			EngineName:     e.client.EngineName(),
 			ModelSize:      e.client.ModelSize(),
@@ -193,6 +196,22 @@ func (r *PluginRouter) List() []EndpointSummary {
 // Route returns a healthy InferenceClient according to the configured routing mode.
 // Returns an error if no healthy client is available.
 func (r *PluginRouter) Route() (*InferenceClient, error) {
+	return r.routeFiltered(nil)
+}
+
+// RouteBatch returns a healthy batch-capable InferenceClient (StreamingMode != NATIVE).
+// NATIVE endpoints (e.g. sherpa-onnx) only support streaming Transcribe and reject
+// batch unary calls; they are excluded so the FairDecodeDispatcher never routes to them.
+func (r *PluginRouter) RouteBatch() (*InferenceClient, error) {
+	return r.routeFiltered(func(c *InferenceClient) bool {
+		return c.StreamingMode() != inferencepb.StreamingMode_STREAMING_MODE_NATIVE
+	})
+}
+
+// routeFiltered applies the configured routing mode, skipping any entry for which
+// accept returns false. A nil accept function accepts all entries.
+// Must NOT be called with r.mu held.
+func (r *PluginRouter) routeFiltered(accept func(*InferenceClient) bool) (*InferenceClient, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -202,30 +221,30 @@ func (r *PluginRouter) Route() (*InferenceClient, error) {
 
 	switch r.mode {
 	case RoutingLeastConn:
-		return r.routeLeastConn()
+		return r.routeLeastConn(accept)
 	case RoutingActiveStandby:
-		return r.routeActiveStandby()
+		return r.routeActiveStandby(accept)
 	default:
-		return r.routeRoundRobin()
+		return r.routeRoundRobin(accept)
 	}
 }
 
-// routeRoundRobin cycles through healthy endpoints in registration order.
-func (r *PluginRouter) routeRoundRobin() (*InferenceClient, error) {
+// routeRoundRobin cycles through healthy, accepted endpoints in registration order.
+func (r *PluginRouter) routeRoundRobin(accept func(*InferenceClient) bool) (*InferenceClient, error) {
 	n := len(r.entries)
 	start := int(r.counter.Add(1) - 1)
 	for i := range n {
 		e := r.entries[(start+i)%n]
-		if e.client.endpoint.IsHealthy() {
+		if e.client.endpoint.IsHealthy() && (accept == nil || accept(e.client)) {
 			return e.client, nil
 		}
 	}
 	return nil, fmt.Errorf("no healthy inference endpoint available")
 }
 
-// routeLeastConn picks the healthy endpoint with the fewest in-flight Transcribe RPCs.
+// routeLeastConn picks the healthy, accepted endpoint with the fewest in-flight RPCs.
 // Ties are broken by the round-robin counter.
-func (r *PluginRouter) routeLeastConn() (*InferenceClient, error) {
+func (r *PluginRouter) routeLeastConn(accept func(*InferenceClient) bool) (*InferenceClient, error) {
 	var best *InferenceClient
 	var bestInflight int64 = -1
 
@@ -233,7 +252,7 @@ func (r *PluginRouter) routeLeastConn() (*InferenceClient, error) {
 	start := int(r.counter.Add(1) - 1)
 	for i := range n {
 		e := r.entries[(start+i)%n]
-		if !e.client.endpoint.IsHealthy() {
+		if !e.client.endpoint.IsHealthy() || (accept != nil && !accept(e.client)) {
 			continue
 		}
 		inflight := e.client.Inflight()
@@ -248,9 +267,9 @@ func (r *PluginRouter) routeLeastConn() (*InferenceClient, error) {
 	return best, nil
 }
 
-// routeActiveStandby picks the healthy endpoint with the highest priority.
+// routeActiveStandby picks the healthy, accepted endpoint with the highest priority.
 // When multiple endpoints share the same priority, round-robin is used among them.
-func (r *PluginRouter) routeActiveStandby() (*InferenceClient, error) {
+func (r *PluginRouter) routeActiveStandby(accept func(*InferenceClient) bool) (*InferenceClient, error) {
 	var best *InferenceClient
 	bestPriority := -1 << 31 // min int
 
@@ -258,7 +277,7 @@ func (r *PluginRouter) routeActiveStandby() (*InferenceClient, error) {
 	start := int(r.counter.Add(1) - 1)
 	for i := range n {
 		e := r.entries[(start+i)%n]
-		if !e.client.endpoint.IsHealthy() {
+		if !e.client.endpoint.IsHealthy() || (accept != nil && !accept(e.client)) {
 			continue
 		}
 		if e.priority > bestPriority {
