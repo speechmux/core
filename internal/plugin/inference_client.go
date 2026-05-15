@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -11,21 +12,21 @@ import (
 	inferencepb "github.com/speechmux/proto/gen/go/inference/v1"
 )
 
-
 // InferenceClient wraps an Endpoint and calls the InferencePlugin Transcribe RPC.
 // Circuit-breaker state is managed by the underlying Endpoint: each RPC error
 // increments the failure counter; success resets it.
 type InferenceClient struct {
-	endpoint   *Endpoint
-	stub       inferencepb.InferencePluginClient
-	inflight   atomic.Int64 // number of in-flight Transcribe RPCs; used by least_connections routing
+	endpoint *Endpoint
+	stub     inferencepb.InferencePluginClient
+	inflight atomic.Int64 // number of in-flight Transcribe RPCs; used by least_connections routing
 
-	// Engine metadata populated by FetchCapabilities at startup.
-	// Empty strings/zero values when GetCapabilities fails or has not been called.
-	engineName            string                          // e.g. "mlx_whisper", "faster_whisper"
-	modelSize             string                          // e.g. "large-v3-turbo"
-	device                string                          // e.g. "mps", "cuda", "cpu"
-	streamingMode         inferencepb.StreamingMode       // BATCH_ONLY or NATIVE
+	// capsMu protects the capabilities fields below. FetchCapabilities may be
+	// called from the background health probe goroutine after initial registration.
+	capsMu                sync.RWMutex
+	engineName            string                            // e.g. "mlx_whisper", "faster_whisper"
+	modelSize             string                            // e.g. "large-v3-turbo"
+	device                string                            // e.g. "mps", "cuda", "cpu"
+	streamingMode         inferencepb.StreamingMode         // BATCH_ONLY or NATIVE
 	endpointingCapability inferencepb.EndpointingCapability // NONE, DETECTION, or AUTO_FINALIZE
 }
 
@@ -38,52 +39,74 @@ func NewInferenceClient(ep *Endpoint) *InferenceClient {
 }
 
 // FetchCapabilities calls GetCapabilities on the plugin and caches engine metadata.
-// Called once after endpoint registration; errors are non-fatal — the endpoint
-// remains usable but engine info fields will be empty strings.
+// Safe to call concurrently; errors are non-fatal — the endpoint remains usable
+// but engine info fields will retain their previous (or zero) values.
 func (c *InferenceClient) FetchCapabilities(ctx context.Context) error {
 	resp, err := c.stub.GetCapabilities(ctx, &emptypb.Empty{})
 	if err != nil {
 		return fmt.Errorf("inference endpoint %s: GetCapabilities: %w", c.endpoint.ID(), err)
 	}
+	c.capsMu.Lock()
 	c.engineName = resp.GetEngineName()
 	c.modelSize = resp.GetModelSize()
 	c.device = resp.GetDevice()
 	c.streamingMode = resp.GetStreamingMode()
 	c.endpointingCapability = resp.GetEndpointingCapability()
+	c.capsMu.Unlock()
 	return nil
 }
 
 // EngineName returns the engine name reported by GetCapabilities (e.g. "mlx_whisper").
 // Empty when FetchCapabilities has not been called or failed.
-func (c *InferenceClient) EngineName() string { return c.engineName }
+func (c *InferenceClient) EngineName() string {
+	c.capsMu.RLock()
+	defer c.capsMu.RUnlock()
+	return c.engineName
+}
 
 // ModelSize returns the model size reported by GetCapabilities (e.g. "large-v3-turbo").
 // Empty when FetchCapabilities has not been called or failed.
-func (c *InferenceClient) ModelSize() string { return c.modelSize }
+func (c *InferenceClient) ModelSize() string {
+	c.capsMu.RLock()
+	defer c.capsMu.RUnlock()
+	return c.modelSize
+}
 
 // Device returns the compute device reported by GetCapabilities (e.g. "mps", "cuda", "cpu").
 // Empty when FetchCapabilities has not been called or failed.
-func (c *InferenceClient) Device() string { return c.device }
+func (c *InferenceClient) Device() string {
+	c.capsMu.RLock()
+	defer c.capsMu.RUnlock()
+	return c.device
+}
 
 // StreamingMode returns the streaming mode reported by GetCapabilities.
 // Returns STREAMING_MODE_UNSPECIFIED when FetchCapabilities has not been called or failed.
-func (c *InferenceClient) StreamingMode() inferencepb.StreamingMode { return c.streamingMode }
+func (c *InferenceClient) StreamingMode() inferencepb.StreamingMode {
+	c.capsMu.RLock()
+	defer c.capsMu.RUnlock()
+	return c.streamingMode
+}
 
 // EndpointingCapability returns the endpointing capability reported by GetCapabilities.
 // Returns ENDPOINTING_CAPABILITY_UNSPECIFIED when FetchCapabilities has not been called or failed.
 func (c *InferenceClient) EndpointingCapability() inferencepb.EndpointingCapability {
+	c.capsMu.RLock()
+	defer c.capsMu.RUnlock()
 	return c.endpointingCapability
 }
 
 // Capabilities returns the full InferenceCapabilities struct populated by FetchCapabilities.
 // Returns a zero-value struct if FetchCapabilities has not been called or failed.
 func (c *InferenceClient) Capabilities() *inferencepb.InferenceCapabilities {
+	c.capsMu.RLock()
+	defer c.capsMu.RUnlock()
 	return &inferencepb.InferenceCapabilities{
-		EngineName:             c.engineName,
-		ModelSize:              c.modelSize,
-		Device:                 c.device,
-		StreamingMode:          c.streamingMode,
-		EndpointingCapability:  c.endpointingCapability,
+		EngineName:            c.engineName,
+		ModelSize:             c.modelSize,
+		Device:                c.device,
+		StreamingMode:         c.streamingMode,
+		EndpointingCapability: c.endpointingCapability,
 	}
 }
 

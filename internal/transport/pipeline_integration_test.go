@@ -149,7 +149,11 @@ func (s *pipelineSTTServer) HealthCheck(_ context.Context, _ *emptypb.Empty) (*c
 }
 
 func (s *pipelineSTTServer) GetCapabilities(_ context.Context, _ *emptypb.Empty) (*inferencepb.InferenceCapabilities, error) {
-	return &inferencepb.InferenceCapabilities{EngineName: "pipe-stub", MaxConcurrentRequests: 8}, nil
+	return &inferencepb.InferenceCapabilities{
+		EngineName:            "pipe-stub",
+		MaxConcurrentRequests: 8,
+		StreamingMode:         inferencepb.StreamingMode_STREAMING_MODE_BATCH_ONLY,
+	}, nil
 }
 
 func (s *pipelineSTTServer) Transcribe(_ context.Context, req *inferencepb.TranscribeRequest) (*inferencepb.TranscribeResponse, error) {

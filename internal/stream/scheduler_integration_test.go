@@ -61,7 +61,10 @@ func (s *errorSTTServer) HealthCheck(_ context.Context, _ *emptypb.Empty) (*comm
 }
 
 func (s *errorSTTServer) GetCapabilities(_ context.Context, _ *emptypb.Empty) (*inferencepb.InferenceCapabilities, error) {
-	return &inferencepb.InferenceCapabilities{EngineName: "error-stub"}, nil
+	return &inferencepb.InferenceCapabilities{
+		EngineName:    "error-stub",
+		StreamingMode: inferencepb.StreamingMode_STREAMING_MODE_BATCH_ONLY,
+	}, nil
 }
 
 func (s *errorSTTServer) Transcribe(_ context.Context, _ *inferencepb.TranscribeRequest) (*inferencepb.TranscribeResponse, error) {
@@ -141,9 +144,10 @@ func (s *capableSTTServer) HealthCheck(_ context.Context, _ *emptypb.Empty) (*co
 
 func (s *capableSTTServer) GetCapabilities(_ context.Context, _ *emptypb.Empty) (*inferencepb.InferenceCapabilities, error) {
 	return &inferencepb.InferenceCapabilities{
-		EngineName: "capable-engine",
-		ModelSize:  "large-v3",
-		Device:     "mps",
+		EngineName:    "capable-engine",
+		ModelSize:     "large-v3",
+		Device:        "mps",
+		StreamingMode: inferencepb.StreamingMode_STREAMING_MODE_BATCH_ONLY,
 	}, nil
 }
 

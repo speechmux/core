@@ -112,7 +112,29 @@ func (r *PluginRouter) Add(id, socket, address string, priority int) error {
 	capErr := client.FetchCapabilities(capCtx)
 	capCancel()
 	if capErr != nil {
-		slog.Warn("GetCapabilities failed; engine info unavailable", "id", id, "error", capErr)
+		slog.Warn("GetCapabilities failed; retrying in background", "id", id, "error", capErr)
+		// Retry capabilities fetch in the background so RouteBatch() can correctly
+		// classify this endpoint as soon as the plugin becomes ready.
+		go func() {
+			for attempt := range 30 {
+				time.Sleep(2 * time.Second)
+				rCtx, rCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				rErr := client.FetchCapabilities(rCtx)
+				rCancel()
+				if rErr == nil {
+					slog.Info("inference capabilities fetched (background retry)",
+						"id", id, "attempt", attempt+1,
+						"engine", client.EngineName(),
+						"model", client.ModelSize(),
+						"device", client.Device(),
+						"streaming_mode", client.StreamingMode(),
+					)
+					return
+				}
+				slog.Debug("capabilities retry failed", "id", id, "attempt", attempt+1, "error", rErr)
+			}
+			slog.Warn("capabilities fetch gave up after 30 attempts; endpoint will remain UNSPECIFIED", "id", id)
+		}()
 	}
 
 	r.mu.Lock()
@@ -199,12 +221,13 @@ func (r *PluginRouter) Route() (*InferenceClient, error) {
 	return r.routeFiltered(nil)
 }
 
-// RouteBatch returns a healthy batch-capable InferenceClient (StreamingMode != NATIVE).
-// NATIVE endpoints (e.g. sherpa-onnx) only support streaming Transcribe and reject
-// batch unary calls; they are excluded so the FairDecodeDispatcher never routes to them.
+// RouteBatch returns a healthy batch-capable InferenceClient (StreamingMode == BATCH_ONLY).
+// NATIVE endpoints (e.g. sherpa-onnx) only support streaming Transcribe and reject batch
+// unary calls. UNSPECIFIED endpoints have not yet reported their capabilities and are also
+// excluded to prevent routing to an engine that may turn out to be NATIVE.
 func (r *PluginRouter) RouteBatch() (*InferenceClient, error) {
 	return r.routeFiltered(func(c *InferenceClient) bool {
-		return c.StreamingMode() != inferencepb.StreamingMode_STREAMING_MODE_NATIVE
+		return c.StreamingMode() == inferencepb.StreamingMode_STREAMING_MODE_BATCH_ONLY
 	})
 }
 
@@ -405,6 +428,24 @@ func (r *PluginRouter) probeAll(ctx context.Context) {
 		}
 		if status.State == commonpb.PluginState_PLUGIN_STATE_READY {
 			e.client.endpoint.RecordSuccess()
+			// Re-fetch capabilities when the initial fetch at registration failed
+			// (e.g. plugin not yet ready when Core started).
+			if e.client.StreamingMode() == inferencepb.StreamingMode_STREAMING_MODE_UNSPECIFIED {
+				capCtx, capCancel := context.WithTimeout(ctx, probeTimeout)
+				if capErr := e.client.FetchCapabilities(capCtx); capErr != nil {
+					slog.Warn("inference capabilities re-fetch failed",
+						"endpoint_id", e.client.endpoint.ID(), "error", capErr)
+				} else {
+					slog.Info("inference capabilities fetched",
+						"endpoint_id", e.client.endpoint.ID(),
+						"engine", e.client.EngineName(),
+						"model", e.client.ModelSize(),
+						"device", e.client.Device(),
+						"streaming_mode", e.client.StreamingMode(),
+					)
+				}
+				capCancel()
+			}
 		} else {
 			e.client.endpoint.RecordFailure()
 			slog.Warn("inference health probe unhealthy", "endpoint_id", e.client.endpoint.ID(), "state", status.State)

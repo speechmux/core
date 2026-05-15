@@ -98,6 +98,13 @@ func (s *fixedTextSTT) HealthCheck(_ context.Context, _ *emptypb.Empty) (*common
 	return &commonpb.PluginHealthStatus{State: commonpb.PluginState_PLUGIN_STATE_READY}, nil
 }
 
+func (s *fixedTextSTT) GetCapabilities(_ context.Context, _ *emptypb.Empty) (*inferencepb.InferenceCapabilities, error) {
+	return &inferencepb.InferenceCapabilities{
+		EngineName:    "fixed-text-stub",
+		StreamingMode: inferencepb.StreamingMode_STREAMING_MODE_BATCH_ONLY,
+	}, nil
+}
+
 func (s *fixedTextSTT) Transcribe(_ context.Context, req *inferencepb.TranscribeRequest) (*inferencepb.TranscribeResponse, error) {
 	return &inferencepb.TranscribeResponse{
 		RequestId:        req.RequestId,

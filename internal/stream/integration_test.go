@@ -142,6 +142,13 @@ func (s *helloSTTServer) HealthCheck(_ context.Context, _ *emptypb.Empty) (*comm
 	return &commonpb.PluginHealthStatus{State: commonpb.PluginState_PLUGIN_STATE_READY}, nil
 }
 
+func (s *helloSTTServer) GetCapabilities(_ context.Context, _ *emptypb.Empty) (*inferencepb.InferenceCapabilities, error) {
+	return &inferencepb.InferenceCapabilities{
+		EngineName:    "hello-stub",
+		StreamingMode: inferencepb.StreamingMode_STREAMING_MODE_BATCH_ONLY,
+	}, nil
+}
+
 func (s *helloSTTServer) Transcribe(_ context.Context, req *inferencepb.TranscribeRequest) (*inferencepb.TranscribeResponse, error) {
 	return &inferencepb.TranscribeResponse{
 		RequestId: req.RequestId,

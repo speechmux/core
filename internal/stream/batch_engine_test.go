@@ -48,7 +48,11 @@ func (s *fixedTextSTTServer) HealthCheck(_ context.Context, _ *emptypb.Empty) (*
 }
 
 func (s *fixedTextSTTServer) GetCapabilities(_ context.Context, _ *emptypb.Empty) (*inferencepb.InferenceCapabilities, error) {
-	return &inferencepb.InferenceCapabilities{EngineName: "fixed-stub", MaxConcurrentRequests: 8}, nil
+	return &inferencepb.InferenceCapabilities{
+		EngineName:            "fixed-stub",
+		MaxConcurrentRequests: 8,
+		StreamingMode:         inferencepb.StreamingMode_STREAMING_MODE_BATCH_ONLY,
+	}, nil
 }
 
 func (s *fixedTextSTTServer) Transcribe(_ context.Context, req *inferencepb.TranscribeRequest) (*inferencepb.TranscribeResponse, error) {
