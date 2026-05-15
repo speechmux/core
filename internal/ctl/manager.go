@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -147,7 +148,43 @@ func (m *Manager) Status() []ProcessStatus {
 
 // PrintStatus writes a human-readable status table to stdout.
 func (m *Manager) PrintStatus() {
-	statuses := m.Status()
+	PrintStatuses(m.Status())
+}
+
+// StatusFromDir scans stateDir for *.pid files and returns the status of each
+// named process. The ctl manager PID file (ctl.pid) is excluded.
+// Use this for `ctl status` so that no --profile flags are needed: the PID
+// files left by `ctl start` already encode exactly which processes were started.
+func StatusFromDir(stateDir string) []ProcessStatus {
+	entries, err := os.ReadDir(stateDir)
+	if err != nil {
+		return nil
+	}
+	var statuses []ProcessStatus
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".pid" {
+			continue
+		}
+		name := strings.TrimSuffix(e.Name(), ".pid")
+		if name == "ctl" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(stateDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err != nil {
+			continue
+		}
+		running := pid > 0 && isAlive(pid)
+		statuses = append(statuses, ProcessStatus{Name: name, PID: pid, Running: running})
+	}
+	return statuses
+}
+
+// PrintStatuses writes a human-readable status table to stdout.
+func PrintStatuses(statuses []ProcessStatus) {
 	fmt.Printf("%-20s  %-8s  %s\n", "NAME", "PID", "STATUS")
 	fmt.Printf("%-20s  %-8s  %s\n", "----", "---", "------")
 	for _, s := range statuses {

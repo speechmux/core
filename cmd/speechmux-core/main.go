@@ -16,12 +16,22 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/speechmux/core/internal/config"
 	"github.com/speechmux/core/internal/ctl"
 	"github.com/speechmux/core/internal/runtime"
 )
+
+// profileFlags implements flag.Value for collecting repeated --profile flags.
+type profileFlags []string
+
+func (f *profileFlags) String() string { return strings.Join(*f, ",") }
+func (f *profileFlags) Set(v string) error {
+	*f = append(*f, v)
+	return nil
+}
 
 func main() {
 	// Dispatch ctl subcommand before flag.Parse so the ctl flags are handled
@@ -84,7 +94,9 @@ func run(cfgPath, pluginsPath string, logLevel *slog.LevelVar) error {
 // runCtl dispatches ctl subcommands: start, status, stop.
 func runCtl(args []string) error {
 	fs := flag.NewFlagSet("ctl", flag.ExitOnError)
-	workspacePath := fs.String("workspace", "config/workspace.yaml", "path to workspace.yaml")
+	workspacePath := fs.String("workspace", "workspace.yaml", "path to workspace.yaml")
+	var profiles profileFlags
+	fs.Var(&profiles, "profile", "activate a workspace profile (repeatable; e.g. --profile silero --profile sherpa-onnx)")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "usage: speechmux-core ctl <start|status|stop> [flags]\n\n")
 		fs.PrintDefaults()
@@ -110,20 +122,23 @@ func runCtl(args []string) error {
 	if err != nil {
 		return err
 	}
-	mgr := ctl.NewManager(cfg)
 
 	switch subcommand {
 	case "start":
+		filtered := cfg.FilterByProfiles(profiles)
+		mgr := ctl.NewManager(filtered)
 		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 		defer cancel()
-		slog.Info("ctl: starting all processes", "workspace", *workspacePath)
+		slog.Info("ctl: starting processes", "workspace", *workspacePath, "profiles", []string(profiles))
 		return mgr.Start(ctx)
 
 	case "status":
-		mgr.PrintStatus()
+		// Scan PID files written by `ctl start` — no profile flags needed.
+		ctl.PrintStatuses(ctl.StatusFromDir(cfg.StateDir))
 		return nil
 
 	case "stop":
+		mgr := ctl.NewManager(cfg.FilterByProfiles(profiles))
 		return mgr.Stop()
 
 	default:
