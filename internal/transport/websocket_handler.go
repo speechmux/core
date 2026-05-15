@@ -482,6 +482,21 @@ func (h *WebSocketHandler) sendLoop(
 		case result, ok := <-sess.ResultCh:
 			if !ok {
 				// Channel closed: all results flushed.
+				// Check PipelineExitCh first — processor.go always calls
+				// SignalPipelineExit before close(ResultCh), so an error is
+				// already in the channel when we land here. Without this check
+				// the outer select may have raced between the two ready channels
+				// and picked ResultCh first, causing us to send "done" instead
+				// of an error frame.
+				select {
+				case pipelineErr, open := <-sess.PipelineExitCh:
+					if open && pipelineErr != nil {
+						spec := sttErrors.ToErrorSpec(pipelineErr)
+						_ = writeWSError(ctx, conn, spec.Code, spec.Message)
+						return fmt.Errorf("pipeline: %w", pipelineErr)
+					}
+				default:
+				}
 				return writeWSJSON(ctx, conn, wsDoneMessage{Type: "done"})
 			}
 			if err := writeWSJSON(ctx, conn, wsResult(result, sess.EngineUsed())); err != nil {
