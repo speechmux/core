@@ -266,9 +266,7 @@ func (c *Config) Defaults() {
 	if c.Stream.VADFrameTimeoutSec == 0 {
 		c.Stream.VADFrameTimeoutSec = 3.0
 	}
-	if c.Stream.VADWatermarkLagThresholdSec == 0 {
-		c.Stream.VADWatermarkLagThresholdSec = 5.0
-	}
+	// VADWatermarkLagThresholdSec: 0 means disabled — no default applied.
 	if c.Stream.EndpointingSource == "" {
 		c.Stream.EndpointingSource = "core"
 	}
