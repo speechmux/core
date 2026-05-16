@@ -403,6 +403,33 @@ func (e *batchDecodeEngine) runResultCollector(pendingCh <-chan submittedTask) {
 			continue
 		}
 
+		// When the engine returns fine-grained segments, emit one DecodeResult
+		// per segment with accurate per-sentence timestamps.  Segment offsets
+		// are clip-relative; add st.meta.startSec to make them session-relative.
+		if st.meta.isFinal && len(fr.Resp.GetSegments()) > 0 {
+			assembler.Reset()
+			for _, seg := range fr.Resp.GetSegments() {
+				if seg.GetText() == "" {
+					continue
+				}
+				result := DecodeResult{
+					Text:          seg.GetText(),
+					CommittedText: seg.GetText(),
+					IsFinal:       true,
+					StartSec:      st.meta.startSec + float64(seg.GetStartSec()),
+					EndSec:        st.meta.startSec + float64(seg.GetEndSec()),
+					AudioDuration: fr.Resp.AudioDurationSec,
+					LanguageCode:  fr.Resp.LanguageCode,
+				}
+				select {
+				case e.resultsCh <- result:
+				case <-e.ctx.Done():
+					return
+				}
+			}
+			continue
+		}
+
 		committed, unstable := assembler.Update(fr.Resp.Text, st.meta.isFinal)
 		if st.meta.isFinal {
 			assembler.Reset()

@@ -18,7 +18,9 @@ server:
   http_shutdown_timeout_sec: 5 # Graceful HTTP shutdown timeout (seconds) when Core receives SIGTERM.
 
 stream:
-  vad_silence_sec: 0.5              # Silence duration (seconds) after speech before EPD fires.
+  vad_silence_sec: 0.2              # Silence duration (seconds) after speech before EPD fires.
+                                    # 200–300ms suits conversational content; use 400–500ms for
+                                    # deliberate monologue or technical speech with longer pauses.
   vad_threshold: 0.5                # Speech probability threshold (0.0–1.0). Frames above this = speech.
   speech_rms_threshold: 0.02        # RMS below this overrides VAD — treats frame as silence.
   partial_decode_interval_sec: 1.5  # Interval (seconds) between partial decode requests during speech.
@@ -80,7 +82,8 @@ storage:
   directory: "data/audio"  # Directory for audio recordings.
 
 logging:
-  level: "info"  # Log level: debug | info | warn | error.
+  level: "info"    # Log level: debug | info | warn | error.
+  format: "color"   # Log format: json (structured, for log collectors) | text (key=value) | color (text with ANSI colors, for terminals).
 
 tls:
   tls_required: false  # If true, reject plaintext connections on all ports.

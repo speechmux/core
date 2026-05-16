@@ -13,16 +13,37 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 
+	"github.com/lmittmann/tint"
 	"github.com/speechmux/core/internal/config"
 	"github.com/speechmux/core/internal/ctl"
 	"github.com/speechmux/core/internal/runtime"
 )
+
+// newLogHandler creates a slog.Handler for the given format string.
+// Accepted formats: "json" (default), "text", "color".
+// Unknown values fall back to "json".
+func newLogHandler(format string, level slog.Leveler, out io.Writer) slog.Handler {
+	opts := &slog.HandlerOptions{Level: level, AddSource: true}
+	switch format {
+	case "text":
+		return slog.NewTextHandler(out, opts)
+	case "color":
+		return tint.NewHandler(out, &tint.Options{
+			Level:      level,
+			TimeFormat: "15:04:05.000",
+			AddSource:  true,
+		})
+	default:
+		return slog.NewJSONHandler(out, opts)
+	}
+}
 
 // profileFlags implements flag.Value for collecting repeated --profile flags.
 type profileFlags []string
@@ -67,10 +88,15 @@ func run(cfgPath, pluginsPath string, logLevel *slog.LevelVar) error {
 		return err
 	}
 
+	cfg := cfgLoader.Load()
+
 	// Apply log level from config now that core.yaml is loaded.
-	if err := logLevel.UnmarshalText([]byte(cfgLoader.Load().Logging.Level)); err != nil {
-		slog.Warn("invalid logging.level in config; defaulting to info", "value", cfgLoader.Load().Logging.Level)
+	if err := logLevel.UnmarshalText([]byte(cfg.Logging.Level)); err != nil {
+		slog.Warn("invalid logging.level in config; defaulting to info", "value", cfg.Logging.Level)
 	}
+
+	// Re-apply handler with configured format (bootstrap used json; this may switch to text/color).
+	slog.SetDefault(slog.New(newLogHandler(cfg.Logging.Format, logLevel, os.Stderr)))
 
 	plugins, err := config.LoadPlugins(pluginsPath)
 	if err != nil {
@@ -83,9 +109,9 @@ func run(cfgPath, pluginsPath string, logLevel *slog.LevelVar) error {
 	}
 
 	slog.Info("speechmux-core starting",
-		"grpc_port", cfgLoader.Load().Server.GRPCPort,
-		"http_port", cfgLoader.Load().Server.HTTPPort,
-		"ws_port", cfgLoader.Load().Server.WSPort,
+		"grpc_port", cfg.Server.GRPCPort,
+		"http_port", cfg.Server.HTTPPort,
+		"ws_port", cfg.Server.WSPort,
 	)
 
 	return app.Run(context.Background())
@@ -95,6 +121,7 @@ func run(cfgPath, pluginsPath string, logLevel *slog.LevelVar) error {
 func runCtl(args []string) error {
 	fs := flag.NewFlagSet("ctl", flag.ExitOnError)
 	workspacePath := fs.String("workspace", "workspace.yaml", "path to workspace.yaml")
+	logFormat := fs.String("log-format", "json", "log format: json | text | color")
 	var profiles profileFlags
 	fs.Var(&profiles, "profile", "activate a workspace profile (repeatable; e.g. --profile silero --profile sherpa-onnx)")
 	fs.Usage = func() {
@@ -113,10 +140,7 @@ func runCtl(args []string) error {
 		return err
 	}
 
-	// Bootstrap structured logging for ctl commands.
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-	})))
+	slog.SetDefault(slog.New(newLogHandler(*logFormat, slog.LevelInfo, os.Stderr)))
 
 	cfg, err := ctl.LoadWorkspace(*workspacePath)
 	if err != nil {

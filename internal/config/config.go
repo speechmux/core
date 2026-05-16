@@ -133,8 +133,9 @@ type StorageConfig struct {
 
 // LoggingConfig holds log output settings.
 type LoggingConfig struct {
-	Level string  `yaml:"level"`
-	File  *string `yaml:"file"`
+	Level  string  `yaml:"level"`
+	Format string  `yaml:"format"`
+	File   *string `yaml:"file"`
 }
 
 // TLSConfig holds TLS certificate settings.
@@ -250,6 +251,9 @@ func (c *Config) Defaults() {
 	}
 	if c.Logging.Level == "" {
 		c.Logging.Level = "info"
+	}
+	if c.Logging.Format == "" {
+		c.Logging.Format = "json"
 	}
 	if c.Server.HTTPReadTimeoutRaw == 0 {
 		c.Server.HTTPReadTimeoutRaw = 10
