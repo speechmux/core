@@ -1,3 +1,8 @@
+> [!IMPORTANT]
+> **This repository is archived.** `core` now lives in
+> [speechmux/speechmux](https://github.com/speechmux/speechmux/tree/main/core), with its
+> full history. Open issues and pull requests there.
+
 # speechmux/core
 
 Go-based central service that handles gRPC/WebSocket transport, session lifecycle, audio pipeline, end-of-speech detection (EPD), decode scheduling, plugin routing, and observability.
